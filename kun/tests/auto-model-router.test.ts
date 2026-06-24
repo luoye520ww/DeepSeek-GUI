@@ -49,7 +49,64 @@ describe('auto model router', () => {
     expect(recentAutoRouterContext(items, 'turn_3')).not.toContain('latest')
   })
 
-  it('uses the short JSON response path without advertising tools', async () => {
+  it('routes clear low-complexity requests without calling the LLM router', async () => {
+    let called = false
+    const modelClient: ModelClient = {
+      provider: 'fake',
+      model: 'fake',
+      async *stream(): AsyncIterable<ModelStreamChunk> {
+        called = true
+        yield { kind: 'completed', stopReason: 'stop' }
+      }
+    }
+
+    const route = await resolveAutoModelRoute({
+      modelClient,
+      threadId: 'thr_1',
+      turnId: 'turn_1',
+      latestRequest: 'hello',
+      recentContext: '',
+      selectedModelMode: 'auto',
+      abortSignal: new AbortController().signal
+    })
+
+    expect(called).toBe(false)
+    expect(route).toMatchObject({
+      model: 'deepseek-v4-flash',
+      reasoningEffort: 'off',
+      source: 'complexity-estimator'
+    })
+  })
+
+  it('routes clear high-complexity requests without calling the LLM router', async () => {
+    let called = false
+    const modelClient: ModelClient = {
+      provider: 'fake',
+      model: 'fake',
+      async *stream(): AsyncIterable<ModelStreamChunk> {
+        called = true
+        yield { kind: 'completed', stopReason: 'stop' }
+      }
+    }
+
+    const route = await resolveAutoModelRoute({
+      modelClient,
+      threadId: 'thr_1',
+      turnId: 'turn_1',
+      latestRequest: 'Implement OAuth middleware with JWT refresh tokens, database connection pooling, and concurrency safety.',
+      recentContext: '',
+      selectedModelMode: 'auto',
+      abortSignal: new AbortController().signal
+    })
+
+    expect(called).toBe(false)
+    expect(route).toMatchObject({
+      model: 'deepseek-v4-pro',
+      source: 'complexity-estimator'
+    })
+  })
+
+  it('uses the short JSON response path for medium-complexity requests without advertising tools', async () => {
     let seenRequest: ModelRequest | null = null
     const modelClient: ModelClient = {
       provider: 'fake',
@@ -65,7 +122,7 @@ describe('auto model router', () => {
       modelClient,
       threadId: 'thr_1',
       turnId: 'turn_1',
-      latestRequest: 'hello',
+      latestRequest: 'Please compare two naming options and explain the tradeoff briefly.',
       recentContext: '',
       selectedModelMode: 'auto',
       abortSignal: new AbortController().signal

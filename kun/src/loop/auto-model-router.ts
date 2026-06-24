@@ -2,7 +2,7 @@ import { makeUserItem } from '../domain/item.js'
 import type { TurnItem } from '../contracts/items.js'
 import type { ModelClient, ModelRequest, ModelStreamChunk } from '../ports/model-client.js'
 import { estimateComplexity } from './router/complexity-estimator.js'
-import type { ComplexityTier } from './router/complexity-estimator.js'
+import type { ComplexityAssessment, ComplexityTier } from './router/complexity-estimator.js'
 
 export const AUTO_MODEL_ROUTER_MODEL = 'deepseek-v4-flash'
 export const AUTO_MODEL_FLASH = 'deepseek-v4-flash'
@@ -36,10 +36,12 @@ export async function resolveAutoModelRoute(input: {
   abortSignal: AbortSignal
   timeoutMs?: number
 }): Promise<AutoModelRouteSelection> {
-  // Complexity-aware heuristic fallback (#364): when the LLM router
-  // fails (network error, timeout), use the complexity estimator's
-  // tier-based routing instead of the keyword-based heuristic alone.
   const complexity = estimateComplexity(input.latestRequest)
+  const directComplexityRoute = complexityAutoRoute(input.latestRequest, complexity)
+  if (directComplexityRoute) return directComplexityRoute
+
+  // Medium-complexity requests still use the LLM router first. If that path
+  // fails, the fallback keeps the complexity assessment in its source label.
   const heuristicFallback = fallbackAutoRoute(input.latestRequest, input.selectedModelMode, complexity.tier)
   if (input.abortSignal.aborted) return heuristicFallback
 
@@ -84,6 +86,27 @@ export async function resolveAutoModelRoute(input: {
     clearTimeout(timeout)
     input.abortSignal.removeEventListener('abort', onAbort)
   }
+}
+
+function complexityAutoRoute(
+  latestRequest: string,
+  complexity: ComplexityAssessment
+): AutoModelRouteSelection | null {
+  if (complexity.tier === 'low') {
+    return {
+      model: AUTO_MODEL_FLASH,
+      reasoningEffort: 'off',
+      source: 'complexity-estimator'
+    }
+  }
+  if (complexity.tier === 'high') {
+    return {
+      model: AUTO_MODEL_PRO,
+      reasoningEffort: autoReasoningHeuristic(latestRequest),
+      source: 'complexity-estimator'
+    }
+  }
+  return null
 }
 
 export function autoModelHeuristic(
@@ -162,10 +185,13 @@ function fallbackAutoRoute(
   selectedModelMode: string,
   complexityTier?: ComplexityTier
 ): AutoModelRouteSelection {
+  const source: AutoModelRouteSource = complexityTier === 'low' || complexityTier === 'high'
+    ? 'complexity-estimator'
+    : 'heuristic'
   return {
     model: autoModelHeuristic(latestRequest, selectedModelMode, complexityTier),
     reasoningEffort: autoReasoningHeuristic(latestRequest),
-    source: 'heuristic'
+    source
   }
 }
 

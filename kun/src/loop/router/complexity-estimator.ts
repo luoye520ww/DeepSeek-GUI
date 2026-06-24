@@ -8,8 +8,8 @@
  *   4. Code-generation signals
  *   5. Domain-knowledge signals
  *
- * Design principle: underestimate rather than overestimate — false positives
- * cost money but never quality; false negatives directly hurt output quality.
+ * Design principle: prefer explainable, quality-preserving routing for clear
+ * cases, and leave medium/ambiguous cases to the LLM router.
  *
  * Addresses GitHub Issue #364.
  */
@@ -42,6 +42,9 @@ const REASONING_KEYWORDS = [
   '证明', '设计', '排查', '调试', '优化', '重构', '规划', '权衡',
   '优劣', '推荐', '诊断', '优缺点', '给出', '建议',
   'first', 'then', 'step by step', 'multiple steps',
+  '\u5206\u6790', '\u6bd4\u8f83', '\u5bf9\u6bd4', '\u8bc4\u4f30', '\u63a8\u7406',
+  '\u8bbe\u8ba1', '\u67b6\u6784', '\u6392\u67e5', '\u8c03\u8bd5', '\u4f18\u5316',
+  '\u91cd\u6784', '\u5efa\u8bae', '\u89e3\u91ca',
 ]
 
 const TOOL_KEYWORDS = [
@@ -49,6 +52,9 @@ const TOOL_KEYWORDS = [
   'run command', 'execute', 'shell', 'bash', 'terminal', 'list files',
   'search', 'find in', 'grep', 'install', 'build', 'compile', 'test', 'deploy',
   'docker', 'curl', 'wget', 'browse', 'fetch', 'scrape',
+  '\u8bfb\u53d6', '\u5199\u5165', '\u8fd0\u884c\u547d\u4ee4', '\u6267\u884c',
+  '\u7ec8\u7aef', '\u641c\u7d22', '\u67e5\u627e', '\u5b89\u88c5',
+  '\u7f16\u8bd1', '\u6d4b\u8bd5', '\u90e8\u7f72',
   '读取文件', '写文件', '修改文件', '创建文件', '删除文件', '运行命令',
   '执行', '终端', '命令行', '列出文件', '搜索文件', '查找', '安装', '编译',
   '测试', '部署', '提交', '查看', '打开', '浏览', '获取',
@@ -65,6 +71,9 @@ const CODE_KEYWORDS = [
   'promise', 'callback', 'recursion', 'concurrent', 'parallel',
   'sql query', 'migration', 'schema', 'typescript', 'javascript', 'python',
   'rust', 'go ', 'java', 'c++', 'react', 'vue', 'component', 'hook',
+  '\u5b9e\u73b0', '\u4fee\u590d', '\u4ee3\u7801', '\u51fd\u6570',
+  '\u7ec4\u4ef6', '\u63a5\u53e3', '\u4e2d\u95f4\u4ef6', '\u6570\u636e\u5e93',
+  '\u7b97\u6cd5', '\u5e76\u53d1', '\u8fc1\u79fb',
   '写代码', '写一个', '实现', '编写', '代码', '函数', '类', '方法',
   '重构', '修复bug', '修复错误', '调试代码', '重写', '添加功能',
   '中间件', '数据库', '连接池', '接口', '算法', '数据结构', '认证',
@@ -81,6 +90,9 @@ const DOMAIN_KEYWORDS = [
   'cryptograph', 'blockchain', 'compiler', 'interpreter',
   'garbage collection', 'memory management', 'virtual machine',
   'connection pool', 'lifecycle', 'health check',
+  '\u5206\u5e03\u5f0f', '\u5fae\u670d\u52a1', '\u5e76\u53d1', '\u5b89\u5168',
+  '\u8ba4\u8bc1', '\u6388\u6743', '\u52a0\u5bc6', '\u5411\u91cf\u6570\u636e\u5e93',
+  '\u8fde\u63a5\u6c60', '\u751f\u547d\u5468\u671f',
   '分布式', '微服务', '容器', '编排', '负载均衡', '一致性', '事务',
   '索引优化', '查询优化', '并发控制', '锁机制', '内存管理', '垃圾回收',
   '机器学习', '神经网络', '向量数据库', '加密算法', '安全漏洞',
