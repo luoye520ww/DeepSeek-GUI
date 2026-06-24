@@ -50,7 +50,8 @@ export type ContextCompilerOptions = {
  * Orchestrates three concerns that together fix GitHub Issues #247, #155, #229:
  *
  * 1. **Fact Anchors (#247)**: Extracts confirmed decisions from each completed
- *    turn and injects them into the stable prefix, preventing context drift.
+ *    turn. Runtime injection should treat them as dynamic context so the
+ *    immutable system prefix remains cache-stable.
  *
  * 2. **Turn Isolation (#155)**: Partitions conversation items into historical
  *    and active sets, preventing old keywords from leaking into current thinking.
@@ -194,6 +195,23 @@ export class ContextCompiler {
   }
 
   /**
+   * Format fact anchors for request-time dynamic context.
+   *
+   * This intentionally stays out of the immutable system prompt. Anchors can
+   * grow or be overridden between turns; putting them in contextInstructions
+   * preserves provider prefix cache stability while still making them visible.
+   */
+  formatAnchorInstruction(): string | undefined {
+    const anchors = this.formatAnchors()
+    if (!anchors) return undefined
+    return [
+      'Dynamic conversation fact anchors from completed turns:',
+      'Use these only as current-turn context. If the user gives a newer conflicting instruction, prefer the newer user instruction.',
+      anchors
+    ].join('\n')
+  }
+
+  /**
    * Reset the compiler state (e.g., on thread reset).
    */
   reset(): void {
@@ -220,7 +238,7 @@ export class ContextCompiler {
       fewShots: immutable.fewShots,
     }
 
-    const { changed } = detectPrefixChanges(this.prefix, nextComponents)
+    const { changed } = detectPrefixChanges(this.prefix, nextComponents, this.options.stablePrefix)
     return !changed
   }
 }

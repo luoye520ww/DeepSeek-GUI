@@ -47,6 +47,34 @@ describe('AgentLoop', () => {
     expect(h.inflight.size()).toBe(0)
   })
 
+  it('injects fact anchors as dynamic context without changing the system prompt', async () => {
+    const requests: ModelRequest[] = []
+    const model = {
+      provider: 'fake',
+      model: 'fake',
+      async *stream(request: ModelRequest): AsyncIterable<ModelStreamChunk> {
+        requests.push(request)
+        if (requests.length === 1) {
+          yield { kind: 'assistant_text_delta', text: 'I confirm that we will use React.' }
+        }
+        yield { kind: 'completed', stopReason: 'stop' }
+      }
+    }
+    const h = makeHarness(model)
+    await bootstrapThread(h, { request: { prompt: 'Should we use React?' } })
+    await h.loop.runTurn(h.threadId, h.turnId)
+    const second = await h.turns.startTurn({
+      threadId: h.threadId,
+      request: { prompt: 'Now add a login page.' }
+    })
+    await h.loop.runTurn(h.threadId, second.turnId)
+
+    const secondRequest = requests[1]
+    expect(secondRequest?.systemPrompt).toBe('be brief')
+    expect(secondRequest?.systemPrompt).not.toContain('fact-anchors')
+    expect(secondRequest?.contextInstructions?.join('\n')).toContain('fact-anchors')
+  })
+
   it('injects the current shell runtime when bash is available', async () => {
     let observedRequest: ModelRequest | null = null
     const h = makeHarness({

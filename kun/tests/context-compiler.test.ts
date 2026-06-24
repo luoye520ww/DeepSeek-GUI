@@ -278,16 +278,18 @@ describe('ContextCompiler', () => {
 
     const compiled = compiler.compileTurn(turn2Items, 'turn_2', immutable)
 
-    // Prefix should contain fact anchors
+    // Prefix stays stable; fact anchors are available as dynamic context.
     expect(compiled.prefixText).toBeTruthy()
     expect(compiled.prefixFingerprint).toBeTruthy()
+    expect(compiled.prefixText).not.toContain('fact-anchors')
+    expect(compiler.formatAnchorInstruction()).toContain('fact-anchors')
     // Active items should only be from turn_2
     expect(compiled.activeItems.every((item) => item.turnId === 'turn_2')).toBe(true)
     // Turn boundary should be set
     expect(compiled.turnBoundaryId).toContain('turn_2')
   })
 
-  it('injects fact anchors into request system prompt', () => {
+  it('keeps fact anchors out of the request system prompt', () => {
     const compiler = new ContextCompiler()
     const immutable = createImmutablePrefix({
       systemPrompt: 'You are a helpful assistant.',
@@ -313,7 +315,8 @@ describe('ContextCompiler', () => {
     const enriched = compiler.applyToRequest(compiled)
 
     expect(enriched.enrichedSystemPrompt).toBeTruthy()
-    expect(enriched.enrichedSystemPrompt).toContain('fact-anchors')
+    expect(enriched.enrichedSystemPrompt).not.toContain('fact-anchors')
+    expect(compiler.formatAnchorInstruction()).toContain('fact-anchors')
     expect(enriched.turnBoundaryId).toContain('turn_2')
   })
 

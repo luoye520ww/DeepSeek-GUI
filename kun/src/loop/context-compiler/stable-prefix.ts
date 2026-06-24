@@ -11,9 +11,9 @@ import { formatFactAnchors } from './fact-anchor.js'
  * for provider-level prefix caching (e.g. DeepSeek Prompt Cache).
  *
  * The stable prefix builds ON TOP OF the existing `ImmutablePrefix`
- * (kun/src/cache/immutable-prefix.ts), adding fact anchors. It does
- * not replace ImmutablePrefix — it extends it with turn-level stability
- * guarantees for fact anchor growth.
+ * (kun/src/cache/immutable-prefix.ts). Fact anchors are tracked as
+ * components for diagnostics, but are excluded from the prefix content by
+ * default because they are dynamic per-thread context.
  *
  * Addresses GitHub Issue #229: when none of the prefix components change
  * between turns, the prefix block is byte-identical and can be reused by
@@ -50,7 +50,7 @@ export type StablePrefixBuildOptions = {
 }
 
 const DEFAULT_OPTIONS: Required<StablePrefixBuildOptions> = {
-  includeFactAnchors: true,
+  includeFactAnchors: false,
   maxFactAnchors: 32,
   includePinnedConstraints: true,
 }
@@ -92,8 +92,10 @@ export function buildStablePrefix(
  */
 export function detectPrefixChanges(
   current: StablePrefix,
-  nextComponents: StablePrefixComponents
+  nextComponents: StablePrefixComponents,
+  options: StablePrefixBuildOptions = {}
 ): { changed: boolean; changedFields: string[] } {
+  const opts = { ...DEFAULT_OPTIONS, ...options }
   const changed: string[] = []
 
   if (current.components.systemPrompt !== nextComponents.systemPrompt) {
@@ -108,10 +110,9 @@ export function detectPrefixChanges(
     changed.push('pinnedConstraints')
   }
 
-  // Fact anchors can grow by appending without invalidating the cached
-  // prefix. Only actual mutations (status changes, statement edits) trigger
-  // a rebuild.
-  if (!factAnchorsStable(current.components.factAnchors, nextComponents.factAnchors)) {
+  // Fact anchors are dynamic context by default. Only consider them when a
+  // caller explicitly opts into compiling them into the prefix.
+  if (opts.includeFactAnchors && !factAnchorsStable(current.components.factAnchors, nextComponents.factAnchors)) {
     changed.push('factAnchors')
   }
 
@@ -131,7 +132,7 @@ export function rebuildStablePrefix(
   nextComponents: StablePrefixComponents,
   options: StablePrefixBuildOptions = {}
 ): StablePrefix {
-  const { changed } = detectPrefixChanges(current, nextComponents)
+  const { changed } = detectPrefixChanges(current, nextComponents, options)
   if (!changed) {
     return { ...current, valid: true }
   }
@@ -157,11 +158,11 @@ export function rebuildStablePrefix(
 }
 
 /**
- * Bridge: create a StablePrefix from the existing ImmutablePrefix,
- * adding fact anchors as a new dimension.
+ * Bridge: create a StablePrefix from the existing ImmutablePrefix.
  *
  * This is the primary integration point — it does NOT replace
- * ImmutablePrefix, it wraps it with fact-anchor awareness.
+ * ImmutablePrefix. Fact anchors stay outside the prefix unless
+ * includeFactAnchors is explicitly enabled.
  */
 export function stablePrefixFromImmutable(
   immutable: ImmutablePrefix,

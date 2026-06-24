@@ -1332,8 +1332,10 @@ export class AgentLoop {
           nowIso: this.opts.nowIso()
         })
       : null
+    const factAnchorInstruction = this.contextCompiler.formatAnchorInstruction()
     const contextInstructions = [
       ...(runtimeContextInstruction ? [runtimeContextInstruction] : []),
+      ...(factAnchorInstruction ? [factAnchorInstruction] : []),
       ...(activeGoalInstruction ? [activeGoalInstruction] : []),
       ...(goalRecoveryInstruction && (this.goalNoToolRecoveryStepsByTurn.get(turnId) ?? 0) > 0
         ? [goalRecoveryInstruction]
@@ -1359,17 +1361,12 @@ export class AgentLoop {
       contextInstructionCount: contextInstructions.length
     })
     const tokenEconomy = normalizeTokenEconomyConfig(this.opts.tokenEconomy)
-    // Inject fact anchors into system prompt to prevent context drift (#247)
-    const factAnchorText = this.contextCompiler.formatAnchors()
-    const enrichedSystemPrompt = factAnchorText
-      ? `${this.opts.prefix.systemPrompt}\n\n${factAnchorText}`
-      : this.opts.prefix.systemPrompt
     const baseRequest: ModelRequest = {
       threadId,
       turnId,
       model,
       ...(thread?.providerId?.trim() ? { providerId: thread.providerId.trim() } : {}),
-      systemPrompt: enrichedSystemPrompt,
+      systemPrompt: this.opts.prefix.systemPrompt,
       ...(planTurnActive ? { modeInstruction: PLAN_MODE_INSTRUCTION } : {}),
       ...(contextInstructions.length ? { contextInstructions } : {}),
       prefix: this.opts.prefix.fewShots,
