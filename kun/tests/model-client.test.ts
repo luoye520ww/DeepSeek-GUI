@@ -2400,4 +2400,65 @@ describe('CompatModelClient', () => {
     })
     expect(chunks.find((chunk) => chunk.kind === 'completed')).toBeUndefined()
   })
+
+  it('applies normalized reasoning effort to the outgoing body', async () => {
+    let sentBody: Record<string, unknown> = {}
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      sentBody = JSON.parse(String(init?.body ?? '{}'))
+      return new Response(
+        JSON.stringify({
+          id: 'r1',
+          model: 'deepseek-chat',
+          choices: [
+            {
+              index: 0,
+              finish_reason: 'stop',
+              message: { role: 'assistant', content: 'ok' }
+            }
+          ]
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      )
+    }
+    const client = new CompatModelClient({
+      baseUrl: 'https://api.deepseek.com/beta',
+      apiKey: 'k',
+      model: 'deepseek-chat',
+      fetchImpl
+    })
+    const request = buildRequest(new AbortController().signal)
+    request.reasoningEffort = 'xhigh'
+
+    for await (const _chunk of client.stream(request)) {
+      // Drain stream.
+    }
+
+    expect(sentBody.reasoning_effort).toBe('max')
+  })
+
+  it('times out when a streamed response never returns the first chunk', async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start() {
+        // Keep the stream open without emitting data.
+      }
+    })
+    const fetchImpl: typeof fetch = async () =>
+      new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    const client = new CompatModelClient({
+      baseUrl: 'https://example.com/beta',
+      apiKey: 'k',
+      model: 'deepseek-chat',
+      fetchImpl,
+      streamIdleTimeoutMs: 5
+    })
+    const chunks = []
+    for await (const chunk of client.stream(buildRequest(new AbortController().signal))) {
+      chunks.push(chunk)
+    }
+
+    expect(chunks.find((chunk) => chunk.kind === 'error')).toMatchObject({
+      code: 'first_token_timeout'
+    })
+    expect(chunks.find((chunk) => chunk.kind === 'completed')).toBeUndefined()
+  })
 })

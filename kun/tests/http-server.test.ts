@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { dispatchRequest } from '../src/server/http-server.js'
 import { createApprovalRequest } from '../src/domain/approval.js'
 import { makeAssistantTextItem, makeToolCallItem, makeToolResultItem } from '../src/domain/item.js'
@@ -167,6 +167,52 @@ describe('HTTP server', () => {
     )
 
     expect(response.status).toBe(401)
+  })
+
+  it('keeps the legacy /v1/tools diagnostics route authorized', async () => {
+    const h = buildHarness()
+    h.runtime.toolDiagnostics = () => ({
+      providers: [
+        {
+          id: 'builtin:read',
+          kind: 'builtin',
+          enabled: true,
+          available: true
+        }
+      ],
+      mcpServers: [],
+      webProviders: [],
+      skills: {
+        enabled: false,
+        roots: [],
+        skills: [],
+        validationErrors: [],
+        lastActivations: []
+      },
+      attachments: {
+        enabled: false,
+        rootDir: '',
+        count: 0,
+        totalBytes: 0
+      },
+      memory: {
+        enabled: false,
+        rootDir: '',
+        activeCount: 0,
+        tombstoneCount: 0,
+        lastInjectedIds: []
+      }
+    })
+    const response = await dispatchRequest(
+      h.router,
+      new Request('http://localhost/v1/tools', {
+        headers: { authorization: 'Bearer tok-1' }
+      })
+    )
+
+    expect(response.status).toBe(200)
+    const body = await readJson(response) as { providers: Array<{ id: string }> }
+    expect(body.providers[0]).toMatchObject({ id: 'builtin:read' })
   })
 
   it('lists discovered skills through the HTTP layer', async () => {
@@ -1269,6 +1315,6 @@ describe('HTTP server', () => {
     )
     expect(response.status).toBe(200)
     const body = (await readJson(response)) as { path: string }
-    expect(body.path).toBe('/tmp')
+    expect(body.path).toBe(resolve('/tmp'))
   })
 })

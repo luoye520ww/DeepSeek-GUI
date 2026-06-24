@@ -110,14 +110,30 @@ export class RouteRegistry {
   private async loadFromServer(fetchFn: RouteRegistryFetch): Promise<void> {
     const result = await fetchFn(KUN_ROUTES_PATH, 'GET')
     if (!result.ok) throw new Error(`Failed to fetch routes: HTTP ${result.status}`)
-    const parsed = JSON.parse(result.body) as { routes?: Array<{ method: string; path: string }> }
+    const parsed = JSON.parse(result.body) as {
+      routes?: Array<{ key?: string; method?: string; methods?: string[]; path: string }>
+    }
     if (!parsed.routes || !Array.isArray(parsed.routes)) throw new Error('Invalid routes response')
-    const entries: RouteEntry[] = parsed.routes.map((r, i) => ({
-      key: `server.${i}`,
-      methods: [r.method],
-      path: r.path,
-    }))
-    this.routes = buildRouteMap(entries)
+    const entries = buildRouteMap(DEFAULT_ROUTES)
+    parsed.routes.forEach((route, index) => {
+      const methods = normalizeRouteMethods(route)
+      if (!route.path || methods.length === 0) return
+      const routeKey = route.key
+      const keyed = routeKey ? entries[routeKey] : undefined
+      if (routeKey && keyed) {
+        entries[routeKey] = { ...keyed, methods, path: route.path }
+        return
+      }
+      const matchedDefault = Object.values(entries).find((entry) =>
+        entry.path === route.path && entry.methods.some((method) => methods.includes(method))
+      )
+      if (matchedDefault) {
+        entries[matchedDefault.key] = { ...matchedDefault, methods, path: route.path }
+        return
+      }
+      entries[`server.${index}`] = { key: `server.${index}`, methods, path: route.path }
+    })
+    this.routes = entries
     this.source = 'server'
   }
 
@@ -135,3 +151,8 @@ export class RouteRegistry {
 }
 
 export const routeRegistry = new RouteRegistry()
+
+function normalizeRouteMethods(route: { method?: string; methods?: string[] }): string[] {
+  const values = route.methods?.length ? route.methods : route.method ? [route.method] : []
+  return [...new Set(values.map((method) => method.trim().toUpperCase()).filter(Boolean))]
+}

@@ -91,6 +91,10 @@ export function buildRouter(runtime: ServerRuntime): Router {
     if (!authorize(request, runtime)) return ERRORS.unauthorized()
     return runtimeToolDiagnosticsJsonResponse(runtime)
   })
+  router.add('GET', '/v1/tools', async (request) => {
+    if (!authorize(request, runtime)) return ERRORS.unauthorized()
+    return runtimeToolDiagnosticsJsonResponse(runtime)
+  })
   router.add('GET', '/v1/skills', async (request) => {
     if (!authorize(request, runtime)) return ERRORS.unauthorized()
     return listSkills(runtime)

@@ -9,8 +9,8 @@ import { isToolResultBridgeItem, repairModelHistoryItems } from '../../domain/mo
 import { extractToolResultImages, toolResultTextWithoutImages } from '../../loop/tool-result-image.js'
 import { repairToolArguments } from './tool-argument-repair.js'
 import { isDeepSeekHost, probeDeepSeekReachable } from './model-error-probe.js'
-import { validateModelRequest, detectProviderRules, type ModelValidationRules } from './model-request-validator.js'
-import { StreamTimeoutTracker } from './stream-timeout.js'
+import { validateModelRequest, detectProviderRules, type NormalizedModelParams } from './model-request-validator.js'
+import { StreamTimeoutTracker, normalizeStreamTimeoutConfig, type TimeoutKind } from './stream-timeout.js'
 import { streamTimeoutTelemetry } from '../../telemetry/stream-timeout-telemetry.js'
 import {
   DEFAULT_MODEL_ENDPOINT_FORMAT,
@@ -253,8 +253,6 @@ export class CompatModelClient implements ModelClient {
       return
     }
     const url = buildModelEndpointUrl(this.config.baseUrl, configuredEndpointFormat)
-    const stream = request.stream ?? !this.config.nonStreaming
-    const body = this.buildRequestBody(request, stream, { endpointFormat })
     // Validate model request parameters before sending (#281)
     const providerRules = detectProviderRules(this.config.baseUrl)
     const validation = validateModelRequest(request, providerRules)
@@ -262,25 +260,34 @@ export class CompatModelClient implements ModelClient {
       yield { kind: 'error', message: `Parameter validation failed: ${validation.error} (field: ${validation.field})` }
       return
     }
+    const stream = request.stream ?? !this.config.nonStreaming
+    const requestForBody = withNormalizedModelParams(request, validation.normalized)
+    const body = this.buildRequestBody(requestForBody, stream, { endpointFormat })
     if (round) {
       round.requestBody = body
       round.url = redactUrlForLog(url)
     }
     const headers = this.buildHeaders(stream, endpointFormat)
     // Stream timeout tracking (#299): T1=first token, T2=inter-token, T3=total
-    const timeoutTracker = new StreamTimeoutTracker(
-      { firstTokenTimeoutMs: 30_000, interTokenTimeoutMs: 45_000, totalTimeoutMs: 600_000 },
+    const configuredStreamIdleTimeoutMs = normalizeStreamIdleTimeoutMs(this.config.streamIdleTimeoutMs)
+    const streamTimeoutConfig = stream
+      ? normalizeStreamTimeoutConfig({
+        firstTokenTimeoutMs: configuredStreamIdleTimeoutMs,
+        interTokenTimeoutMs: configuredStreamIdleTimeoutMs
+      })
+      : null
+    const timeoutTracker = streamTimeoutConfig ? new StreamTimeoutTracker(
+      streamTimeoutConfig,
       { provider: this.provider, model: requestModel, threadId: request.threadId, turnId: request.turnId }
+    ) : null
+    timeoutTracker?.start()
+    let result = await this.postChatCompletion(
+      url,
+      headers,
+      body,
+      request.abortSignal,
+      streamTimeoutConfig?.firstTokenTimeoutMs
     )
-    timeoutTracker.start()
-    let result = await this.postChatCompletion(url, headers, body, request.abortSignal)
-    // T1 check — first token timeout (#299)
-    const t1Check = timeoutTracker.checkFirstToken()
-    if (t1Check.kind === 'timeout') {
-      streamTimeoutTelemetry.record(timeoutTracker.createTelemetryEvent(t1Check.timeoutKind))
-      yield { kind: 'error', message: t1Check.message, code: 'first_token_timeout' }
-      return
-    }
     // Retry transient gateway failures (502/503/504) a few times before giving
     // up. These are upstream load-balancer hiccups (e.g. an ALB returning
     // "502 Bad Gateway"), not request errors — failing the whole turn on the
@@ -296,10 +303,28 @@ export class CompatModelClient implements ModelClient {
         yield { kind: 'error', message: 'request was aborted during retry backoff' }
         return
       }
-      result = await this.postChatCompletion(url, headers, body, request.abortSignal)
+      result = await this.postChatCompletion(
+        url,
+        headers,
+        body,
+        request.abortSignal,
+        streamTimeoutConfig?.firstTokenTimeoutMs
+      )
     }
     if (result.kind === 'error') {
-      yield { kind: 'error', message: result.message }
+      if (result.code === 'first_token_timeout') {
+        streamTimeoutTelemetry.record(timeoutTracker?.createTelemetryEvent('first_token') ?? {
+          kind: 'first_token',
+          provider: this.provider,
+          model: requestModel,
+          threadId: request.threadId,
+          turnId: request.turnId,
+          durationMs: streamTimeoutConfig?.firstTokenTimeoutMs ?? 0,
+          fallback: 'error',
+          retryAttempt: 0
+        })
+      }
+      yield { kind: 'error', message: result.message, code: result.code }
       return
     }
     let response = result.response
@@ -308,9 +333,15 @@ export class CompatModelClient implements ModelClient {
       if (usesChatCompletionsShape(endpointFormat) && shouldRetryWithoutStreamUsage(response.status, text, body)) {
         const retryBody = this.buildRequestBody(request, stream, { endpointFormat, includeStreamUsage: false })
         if (round) round.requestBody = retryBody
-        const retry = await this.postChatCompletion(url, headers, retryBody, request.abortSignal)
+        const retry = await this.postChatCompletion(
+          url,
+          headers,
+          retryBody,
+          request.abortSignal,
+          streamTimeoutConfig?.firstTokenTimeoutMs
+        )
         if (retry.kind === 'error') {
-          yield { kind: 'error', message: retry.message }
+          yield { kind: 'error', message: retry.message, code: retry.code }
           return
         }
         response = retry.response
@@ -324,7 +355,7 @@ export class CompatModelClient implements ModelClient {
             yield { kind: 'error', message: 'model response had no body' }
             return
           }
-          yield* this.streamSse(response.body, request.abortSignal, endpointFormat, requestModel)
+          yield* this.streamSse(response.body, request.abortSignal, endpointFormat, requestModel, timeoutTracker)
           return
         }
         const retryText = await response.text()
@@ -369,7 +400,7 @@ export class CompatModelClient implements ModelClient {
       yield { kind: 'error', message: 'model response had no body' }
       return
     }
-    yield* this.streamSse(response.body, request.abortSignal, endpointFormat, requestModel)
+    yield* this.streamSse(response.body, request.abortSignal, endpointFormat, requestModel, timeoutTracker)
   }
 
   private endpointFormat(): ModelEndpointFormat {
@@ -395,19 +426,50 @@ export class CompatModelClient implements ModelClient {
     url: string,
     headers: Record<string, string>,
     body: Record<string, unknown>,
-    signal: AbortSignal
-  ): Promise<{ kind: 'response'; response: Response } | { kind: 'error'; message: string }> {
+    signal: AbortSignal,
+    timeoutMs?: number
+  ): Promise<{ kind: 'response'; response: Response } | { kind: 'error'; message: string; code?: string }> {
+    const timeout = timeoutMs !== undefined && Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? Math.floor(timeoutMs)
+      : 0
+    const controller = timeout > 0 ? new AbortController() : null
+    const fetchSignal = controller?.signal ?? signal
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let timedOut = false
+    let cleanupAbort: (() => void) | undefined
+    if (controller) {
+      if (signal.aborted) {
+        return { kind: 'error', message: 'model request failed: request was aborted', code: 'aborted' }
+      }
+      const onAbort = (): void => controller.abort()
+      signal.addEventListener('abort', onAbort, { once: true })
+      cleanupAbort = () => signal.removeEventListener('abort', onAbort)
+      timer = setTimeout(() => {
+        timedOut = true
+        controller.abort()
+      }, timeout)
+    }
     try {
       const response = await this.fetchImpl(url, {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
-        signal
+        signal: fetchSignal
       })
       return { kind: 'response', response }
     } catch (error) {
+      if (timedOut) {
+        return {
+          kind: 'error',
+          message: `model stream did not return response headers within ${timeout}ms`,
+          code: 'first_token_timeout'
+        }
+      }
       const message = error instanceof Error ? error.message : String(error)
       return { kind: 'error', message: `model request failed: ${message}` }
+    } finally {
+      if (timer) clearTimeout(timer)
+      cleanupAbort?.()
     }
   }
 
@@ -876,7 +938,8 @@ export class CompatModelClient implements ModelClient {
     body: ReadableStream<Uint8Array>,
     signal: AbortSignal,
     endpointFormat: ModelEndpointFormat,
-    model: string
+    model: string,
+    timeoutTracker?: StreamTimeoutTracker | null
   ): AsyncIterable<ModelStreamChunk> {
     const decoder = new TextDecoder('utf-8')
     const reader = body.getReader()
@@ -890,15 +953,24 @@ export class CompatModelClient implements ModelClient {
     let stopReason: ModelStopReason = 'stop'
     let finishReason: string | null = null
     let sawDone = false
-    const idleTimeoutMs = normalizeStreamIdleTimeoutMs(this.config.streamIdleTimeoutMs)
+    const timeoutConfig = timeoutTracker?.getConfig()
+    const idleTimeoutMs = timeoutConfig?.interTokenTimeoutMs ?? normalizeStreamIdleTimeoutMs(this.config.streamIdleTimeoutMs)
+    let hasReadData = false
     try {
       while (!signal.aborted) {
-        const read = await readStreamChunk(reader, signal, idleTimeoutMs)
+        const activeTimeoutMs = hasReadData
+          ? idleTimeoutMs
+          : timeoutConfig?.firstTokenTimeoutMs ?? idleTimeoutMs
+        const read = await readStreamChunk(reader, signal, activeTimeoutMs)
         if (read.kind === 'timeout') {
+          const timeoutKind: TimeoutKind = hasReadData ? 'inter_token' : 'first_token'
+          if (timeoutTracker) streamTimeoutTelemetry.record(timeoutTracker.createTelemetryEvent(timeoutKind))
           yield {
             kind: 'error',
-            message: `model stream stalled for ${idleTimeoutMs}ms without data`,
-            code: 'stream_idle_timeout'
+            message: hasReadData
+              ? `model stream stalled for ${idleTimeoutMs}ms without data`
+              : `model stream did not return a first chunk within ${activeTimeoutMs}ms`,
+            code: hasReadData ? 'stream_idle_timeout' : 'first_token_timeout'
           }
           return
         }
@@ -909,6 +981,13 @@ export class CompatModelClient implements ModelClient {
         }
         const { value, done } = read
         if (done) break
+        hasReadData = true
+        const timeoutCheck = timeoutTracker?.onChunk()
+        if (timeoutCheck?.kind === 'timeout') {
+          streamTimeoutTelemetry.record(timeoutTracker.createTelemetryEvent(timeoutCheck.timeoutKind))
+          yield { kind: 'error', message: timeoutCheck.message, code: `${timeoutCheck.timeoutKind}_timeout` }
+          return
+        }
         buffer += decoder.decode(value, { stream: true })
         let boundary: number
         while ((boundary = buffer.indexOf('\n\n')) >= 0) {
@@ -2077,6 +2156,16 @@ function mergeUsageSnapshots(current: UsageSnapshot | null, next: UsageSnapshot)
     cacheHitRate: next.cacheHitRate ?? current.cacheHitRate,
     costUsd: next.costUsd ?? current.costUsd,
     costCny: next.costCny ?? current.costCny
+  }
+}
+
+function withNormalizedModelParams(request: ModelRequest, normalized: NormalizedModelParams): ModelRequest {
+  return {
+    ...request,
+    ...(normalized.reasoningEffort !== undefined ? { reasoningEffort: normalized.reasoningEffort } : {}),
+    ...(normalized.maxTokens !== undefined ? { maxTokens: normalized.maxTokens } : {}),
+    ...(normalized.temperature !== undefined ? { temperature: normalized.temperature } : {}),
+    ...(normalized.topP !== undefined ? { topP: normalized.topP } : {})
   }
 }
 
