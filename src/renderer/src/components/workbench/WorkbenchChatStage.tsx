@@ -3,7 +3,8 @@ import {
   Suspense,
   type ComponentProps,
   type PointerEventHandler,
-  type ReactElement
+  type ReactElement,
+  type ReactNode
 } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { ChatBlock, RuntimeConnectionStatus } from '../../agent/types'
@@ -43,6 +44,7 @@ export type WorkbenchChatStageProps = {
   returnParentTitle: string
   showReturnBar: boolean
   composerProps: FloatingComposerProps
+  composerTopSlot?: ReactNode
   terminalOpen: boolean
   terminalWorkspaceRoot: string
   terminalHeight: number
@@ -81,6 +83,7 @@ export function WorkbenchChatStage({
   returnParentTitle,
   showReturnBar,
   composerProps,
+  composerTopSlot,
   terminalOpen,
   terminalWorkspaceRoot,
   terminalHeight,
@@ -163,7 +166,10 @@ export function WorkbenchChatStage({
               onBack={onBackToParent}
             />
           ) : (
-            <FloatingComposer {...composerProps} />
+            <div className="flex w-full max-w-5xl flex-col items-center gap-2">
+              {composerTopSlot}
+              <FloatingComposer {...composerProps} />
+            </div>
           )}
         </div>
       </div>

@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { getProvider } from '../agent/registry'
 import { useChatStore } from '../store/chat-store'
 import type { RightPanelMode } from './chat/WorkbenchTopBar'
 import { type ComposerReasoningEffort } from './chat/FloatingComposerModelPicker'
@@ -41,6 +42,7 @@ import {
 } from '../lib/composer-file-references'
 import { useDesignWorkspaceStore } from '../design/design-workspace-store'
 import { designDocumentComposerFileReferences } from '../design/design-document-file-reference'
+import { RemoteTargetPicker } from './RemoteTargetPicker'
 
 const FILE_TREE_SIDEBAR_WIDTH = 320
 
@@ -57,7 +59,8 @@ export function Workbench(): ReactElement {
     activeClawChannelId, selectClawChannel, resetClawChannelSession, setClawChannelModel,
     appendLocalClawTurn, setError, sendMessage, reviewActiveThread, queuedMessages,
     removeQueuedMessage, interrupt, probeRuntime, composerModel, composerProviderId,
-    composerPickList, composerModelGroups, disabledSkillIds, composerMode, setComposerMode,
+    composerPickList, composerModelGroups, composerRemoteTarget, setComposerRemoteTarget,
+    disabledSkillIds, composerMode, setComposerMode,
     setComposerModel, setThreadSearch, renameThread, pinThread, archiveThread, deleteThread,
     clearActiveThreadSelection, spawnSideConversation, openSideConversationDraft, selectSideConversation, setSidePanelOpen,
     sideConversations, sidePanel
@@ -417,6 +420,34 @@ export function Workbench(): ReactElement {
     runtimeConnectionReady: runtimeConnection === 'ready',
     spawnSideConversation, openSideConversationDraft
   })
+  const listRemoteHosts = useCallback(async () => {
+    const listHosts = getProvider().listRemoteHosts
+    if (!listHosts) return { configFound: false, hosts: [] }
+    return listHosts()
+  }, [])
+  const testRemoteConnection = useCallback(async (input: { alias: string; remoteDir?: string }) => {
+    const testConnection = getProvider().testRemoteConnection
+    if (!testConnection) {
+      return {
+        ok: false,
+        alias: input.alias,
+        status: 'error' as const,
+        tools: {},
+        error: 'Remote targets are not supported by the active runtime.'
+      }
+    }
+    return testConnection(input)
+  }, [])
+  const remoteTargetPicker =
+    route === 'chat' ? (
+      <RemoteTargetPicker
+        value={composerRemoteTarget}
+        onChange={setComposerRemoteTarget}
+        listHosts={listRemoteHosts}
+        testConnection={testRemoteConnection}
+        disabled={busy || runtimeConnection !== 'ready'}
+      />
+    ) : undefined
   const rightPanelSharedProps = buildWorkbenchRightPanelSharedProps({
     input, setInput, mode: composerMode, setMode: setComposerMode, busy, runtimeConnection,
     activeThreadId, blocks, liveReasoning, liveAssistant, composerModelGroups, composerReasoningEffort,
@@ -659,6 +690,7 @@ export function Workbench(): ReactElement {
             returnParentTitle: threads.find((thread) => thread.id === activeThreadParentId)?.title?.trim() ?? '',
             showReturnBar: activeThreadRelation === 'side' && Boolean(activeThreadParentId),
             composerProps: chatComposerProps,
+            composerTopSlot: remoteTargetPicker,
             terminalOpen,
             terminalWorkspaceRoot: fileTreeWorkspaceRoot,
             terminalHeight,

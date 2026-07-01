@@ -57,6 +57,8 @@ export function useWorkbenchChatStoreState() {
       composerProviderId: s.composerProviderId,
       composerPickList: s.composerPickList,
       composerModelGroups: s.composerModelGroups,
+      composerRemoteTarget: s.composerRemoteTarget,
+      setComposerRemoteTarget: s.setComposerRemoteTarget,
       disabledSkillIds: s.disabledSkillIds,
       composerMode: s.composerMode,
       setComposerMode: s.setComposerMode,
