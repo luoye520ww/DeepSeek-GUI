@@ -30,6 +30,7 @@ import { buildDelegationToolProviders } from '../adapters/tool/delegation-tool-p
 import { buildWebToolProviders } from '../adapters/tool/web-tool-provider.js'
 import { buildImageGenToolProviders } from '../adapters/tool/image-gen-tool-provider.js'
 import { buildComputerUseToolProviders } from '../adapters/tool/computer-use-tool-provider.js'
+import { createRemotePortForwardRuntime } from '../adapters/tool/remote-port-forward-tool.js'
 import { createRemoteHostsService } from '../remote/remote-hosts-service.js'
 import { RemoteTargetRegistry } from '../remote/remote-target-registry.js'
 import {
@@ -199,6 +200,7 @@ export async function createKunServeRuntime(
   const remoteTargetRegistry = new RemoteTargetRegistry({
     loadBinding: async (threadId) => (await threadStore.get(threadId))?.remoteTarget
   })
+  const remotePortForwardRuntime = createRemotePortForwardRuntime()
   const threadService = new ThreadService({
     threadStore,
     sessionStore,
@@ -210,6 +212,7 @@ export async function createKunServeRuntime(
       events.clearThread(threadId)
       eventBus.clearThread(threadId)
       remoteTargetRegistry.evict(threadId)
+      remotePortForwardRuntime.disposeThreadResources(threadId)
     }
   })
   const artifactStore = new FileArtifactStore(join(activeOptions.dataDir, 'artifacts'), nowIso)
@@ -482,6 +485,7 @@ export async function createKunServeRuntime(
     // Host control is available to the top-level agent only, never to
     // delegated subagents (which use childRegistry/baseToolProviders).
     ...computerUseProviders.providers,
+    remotePortForwardRuntime.provider,
     {
       id: 'goal',
       kind: 'gui' as const,
@@ -781,6 +785,7 @@ export async function createKunServeRuntime(
 	    const nextRegistry = new CapabilityRegistry([
 	      ...nextBaseToolProviders,
 	      ...nextComputerUseProviders.providers,
+	      remotePortForwardRuntime.provider,
 	      {
 	        id: 'goal',
 	        kind: 'gui' as const,
@@ -925,6 +930,7 @@ export async function createKunServeRuntime(
     },
     disposeThreadResources(threadId) {
       remoteTargetRegistry.evict(threadId)
+      remotePortForwardRuntime.disposeThreadResources(threadId)
     },
     resumeInterruptedGoals(threadIds) {
       return loop.resumeInterruptedGoals(threadIds)
@@ -989,6 +995,7 @@ export async function createKunServeRuntime(
     shutdown: async () => {
       try {
         loop.shutdownGoalResume()
+        remotePortForwardRuntime.shutdown()
         await mcpProviders.close()
       } finally {
         await stores.shutdown?.()
