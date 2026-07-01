@@ -674,6 +674,7 @@ export type AgentLoopOptions = {
   memoryStore?: MemoryStore
   /** Kun runtime data root for sandbox-safe background shell output reads. */
   runtimeDataDir?: string
+  resolveExecutionTarget?: (threadId: string) => ToolHostContext['executionTarget'] | undefined
   tokenEconomy?: TokenEconomyConfig
   contextCompaction?: ContextCompactionConfig
   /** Internal-LLM role model routing (smallModel slot + title/summary/codeReview overrides). */
@@ -2208,6 +2209,7 @@ export class AgentLoop {
     sandboxMode: NonNullable<ToolHostContext['sandboxMode']>
     signal: AbortSignal
   }): ToolHostContext {
+    const executionTarget = this.opts.resolveExecutionTarget?.(input.threadId)
     return {
       threadId: input.threadId,
       turnId: input.turnId,
@@ -2225,6 +2227,7 @@ export class AgentLoop {
       approvalPolicy: input.approvalPolicy,
       sandboxMode: input.sandboxMode,
       ...(this.opts.runtimeDataDir ? { runtimeDataDir: this.opts.runtimeDataDir } : {}),
+      ...(executionTarget ? { executionTarget } : {}),
       abortSignal: input.signal,
       awaitApproval: async (approval) => {
         await this.opts.events.record({
