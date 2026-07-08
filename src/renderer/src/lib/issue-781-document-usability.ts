@@ -10,6 +10,9 @@ const ENHANCED_ATTR = 'data-kun-issue781-enhanced'
 const STYLE_ID = 'kun-issue-781-document-usability-style'
 const PINNED_TABS_KEY = 'kun.issue781.pinnedPreviewTabs'
 const SCROLL_POSITIONS_KEY = 'kun.issue781.previewScrollPositions'
+const RECENT_FILES_KEY = 'kun.issue781.recentWorkspaceFiles'
+const FILE_TREE_SORT_KEY = 'kun.issue781.fileTreeSortMode'
+const RECENT_LIMIT = 16
 
 let installed = false
 let observer: MutationObserver | null = null
@@ -143,6 +146,57 @@ function injectStyle(): void {
       border-left: 0;
     }
     .kun-issue781-reader-body .ds-code-sidebar-topbar { display: none; }
+    .kun-issue781-recent-files {
+      flex: 0 0 auto;
+      border-bottom: 1px solid var(--ds-border-muted);
+      padding: 8px 8px 7px;
+    }
+    .kun-issue781-recent-files-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--ds-faint);
+      letter-spacing: .02em;
+    }
+    .kun-issue781-sort-button,
+    .kun-issue781-recent-file {
+      border: 1px solid var(--ds-border-muted);
+      border-radius: 8px;
+      background: var(--ds-card);
+      color: var(--ds-muted);
+      cursor: pointer;
+      font: inherit;
+      font-size: 11.5px;
+    }
+    .kun-issue781-sort-button { padding: 3px 6px; }
+    .kun-issue781-recent-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .kun-issue781-recent-file {
+      display: flex;
+      min-width: 0;
+      align-items: center;
+      justify-content: flex-start;
+      padding: 5px 7px;
+      text-align: left;
+    }
+    .kun-issue781-sort-button:hover,
+    .kun-issue781-recent-file:hover {
+      background: var(--ds-hover);
+      color: var(--ds-ink);
+    }
+    .kun-issue781-recent-file span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
   `
   document.head.appendChild(style)
 }
@@ -173,12 +227,29 @@ function activeTabKey(): string {
   return tabKey(document.querySelector('.ds-code-sidebar-tab.is-active'))
 }
 
+function displayName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() || path
+}
+
 function pinnedTabs(): string[] {
   return readJson<string[]>(PINNED_TABS_KEY, [])
 }
 
 function setPinnedTabs(next: string[]): void {
   writeJson(PINNED_TABS_KEY, Array.from(new Set(next.filter(Boolean))))
+}
+
+function recentFiles(): WorkspaceFileTarget[] {
+  return readJson<WorkspaceFileTarget[]>(RECENT_FILES_KEY, [])
+}
+
+function rememberRecentFile(target: WorkspaceFileTarget): void {
+  const normalizedPath = target.path.replaceAll('\\', '/')
+  const next = [
+    { ...target, path: normalizedPath },
+    ...recentFiles().filter((item) => item.path.replaceAll('\\', '/') !== normalizedPath)
+  ].slice(0, RECENT_LIMIT)
+  writeJson(RECENT_FILES_KEY, next)
 }
 
 function scrollPositions(): Record<string, number> {
@@ -194,6 +265,7 @@ function setScrollPosition(key: string, value: number): void {
 
 function recordPreviewTarget(target: WorkspaceFileTarget): void {
   lastPreviewTarget = target
+  rememberRecentFile(target)
 }
 
 function linkifyTextNode(node: Text): void {
@@ -379,6 +451,102 @@ function enhanceReadingButton(): void {
   actions.insertBefore(button, actions.firstChild)
 }
 
+function likelyWorkspacePath(value: string): boolean {
+  const trimmed = value.trim()
+  if (!trimmed || trimmed.includes(' is not a supported text preview')) return false
+  return /[\\/]/.test(trimmed) || findFileReferences(trimmed).length > 0
+}
+
+function fileTreeRoots(): HTMLElement[] {
+  return Array.from(document.querySelectorAll('div.ds-no-drag.min-h-0'))
+    .filter((root): root is HTMLElement => {
+      if (!(root instanceof HTMLElement)) return false
+      if (root.closest('.ds-code-sidebar')) return false
+      return Boolean(root.querySelector('div[class*="overflow-y-auto"] [title]'))
+    })
+}
+
+function applyFileTreeSort(root: HTMLElement): void {
+  const mode = window.localStorage.getItem(FILE_TREE_SORT_KEY) || 'name'
+  const recentRank = new Map(recentFiles().map((file, index) => [file.path.replaceAll('\\', '/').toLowerCase(), index]))
+  const rows = Array.from(root.querySelectorAll('div[class*="overflow-y-auto"] [title]')) as HTMLElement[]
+  rows.forEach((row, index) => {
+    const title = row.title.replaceAll('\\', '/').toLowerCase()
+    const rank = recentRank.get(title)
+    row.style.order = mode === 'recent'
+      ? String(rank === undefined ? 10000 + index : rank)
+      : ''
+  })
+}
+
+function toggleFileTreeSort(): void {
+  const current = window.localStorage.getItem(FILE_TREE_SORT_KEY) || 'name'
+  window.localStorage.setItem(FILE_TREE_SORT_KEY, current === 'recent' ? 'name' : 'recent')
+  enhanceFileTreeUtilities()
+}
+
+function addRecentFilesPanel(root: HTMLElement): void {
+  const scroll = root.querySelector('div[class*="overflow-y-auto"]')
+  if (!(scroll instanceof HTMLElement)) return
+  let panel = root.querySelector('.kun-issue781-recent-files') as HTMLDivElement | null
+  if (!panel) {
+    panel = document.createElement('div')
+    panel.className = 'kun-issue781-recent-files'
+    scroll.parentElement?.insertBefore(panel, scroll)
+  }
+  const recent = recentFiles().slice(0, 8)
+  const mode = window.localStorage.getItem(FILE_TREE_SORT_KEY) || 'name'
+  panel.innerHTML = `
+    <div class="kun-issue781-recent-files-header">
+      <span>近期文件</span>
+      <button type="button" class="kun-issue781-sort-button">${mode === 'recent' ? '名称排序' : '近期优先'}</button>
+    </div>
+    <div class="kun-issue781-recent-list"></div>
+  `
+  const sortButton = panel.querySelector('.kun-issue781-sort-button')
+  sortButton?.addEventListener('click', toggleFileTreeSort)
+  const list = panel.querySelector('.kun-issue781-recent-list')
+  recent.forEach((target) => {
+    const item = document.createElement('button')
+    item.type = 'button'
+    item.className = 'kun-issue781-recent-file'
+    item.title = target.path
+    item.draggable = true
+    item.innerHTML = `<span>${displayName(target.path)}</span>`
+    item.addEventListener('click', () => previewWorkspaceFile(target))
+    item.addEventListener('dragstart', (event) => {
+      event.dataTransfer?.setData('text/plain', `@${target.path} `)
+      event.dataTransfer?.setData('application/x-kun-file-reference', JSON.stringify(target))
+      event.dataTransfer?.setDragImage(item, 10, 10)
+    })
+    list?.appendChild(item)
+  })
+}
+
+function enhanceFileTreeDrag(root: HTMLElement): void {
+  const rows = Array.from(root.querySelectorAll('div[class*="overflow-y-auto"] [title]')) as HTMLElement[]
+  rows.forEach((row) => {
+    if (row.getAttribute(ENHANCED_ATTR) === 'drag') return
+    const title = row.title.trim()
+    if (!likelyWorkspacePath(title)) return
+    row.setAttribute(ENHANCED_ATTR, 'drag')
+    row.draggable = true
+    row.addEventListener('dragstart', (event) => {
+      const path = title.replaceAll('\\', '/')
+      event.dataTransfer?.setData('text/plain', `@${path} `)
+      event.dataTransfer?.setData('application/x-kun-file-reference', JSON.stringify({ path }))
+    })
+  })
+}
+
+function enhanceFileTreeUtilities(): void {
+  for (const root of fileTreeRoots()) {
+    addRecentFilesPanel(root)
+    applyFileTreeSort(root)
+    enhanceFileTreeDrag(root)
+  }
+}
+
 function scheduleScan(): void {
   if (scanTimer !== null) return
   scanTimer = window.setTimeout(() => {
@@ -387,6 +555,7 @@ function scheduleScan(): void {
     enhancePreviewTabs()
     enhanceScrollMemory()
     enhanceReadingButton()
+    enhanceFileTreeUtilities()
   }, 120)
 }
 
@@ -434,6 +603,7 @@ export function installIssue781DocumentUsability(): void {
   enhancePreviewTabs()
   enhanceScrollMemory()
   enhanceReadingButton()
+  enhanceFileTreeUtilities()
   document.addEventListener('click', onDocumentClick, true)
   document.addEventListener('pointerdown', (event) => {
     if (menuEl && event.target instanceof Node && !menuEl.contains(event.target)) closeIssue781Menu()
