@@ -17,12 +17,16 @@ import {
   useMemo,
   useRef,
   useState,
+  type DragEvent as ReactDragEvent,
   type MouseEvent as ReactMouseEvent,
   type ReactElement
 } from 'react'
 import type { TFunction } from 'i18next'
 import type { ComposerFileReference } from '../../lib/composer-file-references'
-import { relativeWorkspacePath } from '../../lib/composer-file-references'
+import {
+  formatComposerFileMentionToken,
+  relativeWorkspacePath
+} from '../../lib/composer-file-references'
 import { isWorkspaceTextPreviewPath } from '../../lib/workspace-text-preview'
 import {
   SidebarIconButton,
@@ -55,6 +59,8 @@ type ContextMenuState = {
   entry: WorkspaceEntry
 } | null
 
+type FileTreeSortMode = 'name' | 'modified'
+
 const ROOT_PATH = ''
 const IGNORED_DIRS = new Set(['.git', '.hg', '.svn', 'node_modules'])
 
@@ -82,6 +88,23 @@ function entryReference(entry: WorkspaceEntry, workspaceRoot: string): ChatFileT
   }
 }
 
+function compareEntriesByName(left: WorkspaceEntry, right: WorkspaceEntry): number {
+  if (left.type !== right.type) return left.type === 'directory' ? -1 : 1
+  return left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' })
+}
+
+function compareEntriesByModified(left: WorkspaceEntry, right: WorkspaceEntry): number {
+  if (left.type !== right.type) return left.type === 'directory' ? -1 : 1
+  const leftTime = left.mtimeMs ?? 0
+  const rightTime = right.mtimeMs ?? 0
+  if (leftTime !== rightTime) return rightTime - leftTime
+  return compareEntriesByName(left, right)
+}
+
+function sortEntries(entries: WorkspaceEntry[], mode: FileTreeSortMode): WorkspaceEntry[] {
+  return [...entries].sort(mode === 'modified' ? compareEntriesByModified : compareEntriesByName)
+}
+
 export function isChatFileTreeIgnoredDirectory(name: string): boolean {
   return IGNORED_DIRS.has(name.toLowerCase())
 }
@@ -105,6 +128,7 @@ export function ChatFileTreePanel({
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set([ROOT_PATH]))
   const [directories, setDirectories] = useState<Record<string, DirectoryState>>({})
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null)
+  const [sortMode, setSortMode] = useState<FileTreeSortMode>('name')
   const menuRef = useRef<HTMLDivElement | null>(null)
   const root = workspaceRoot.trim()
   const rootName = useMemo(() => workspaceDisplayName(root), [root])
@@ -176,6 +200,20 @@ export function ChatFileTreePanel({
   }, [contextMenu])
 
   const selectedKey = useMemo(() => pathKey(selectedPath ?? ''), [selectedPath])
+  const recentEntries = useMemo(() => {
+    const seen = new Set<string>()
+    return Object.values(directories)
+      .flatMap((state) => state.entries)
+      .filter(isChatFileTreePreviewableEntry)
+      .filter((entry) => {
+        const key = pathKey(entry.path)
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+      .sort(compareEntriesByModified)
+      .slice(0, 8)
+  }, [directories])
 
   if (!root) return null
 
@@ -196,6 +234,14 @@ export function ChatFileTreePanel({
   const addReference = (entry: WorkspaceEntry): void => {
     onAddReference(entryReference(entry, root))
     setContextMenu(null)
+  }
+
+  const setEntryDragData = (event: ReactDragEvent<HTMLElement>, entry: WorkspaceEntry): void => {
+    const reference = entryReference(entry, root)
+    const token = formatComposerFileMentionToken(reference.relativePath, reference.type === 'directory')
+    event.dataTransfer.effectAllowed = 'copy'
+    event.dataTransfer.setData('text/plain', `${token} `)
+    event.dataTransfer.setData('application/x-kun-file-reference', JSON.stringify(reference))
   }
 
   const copyEntryPath = async (entry: WorkspaceEntry, mode: 'absolute' | 'relative'): Promise<void> => {
@@ -260,7 +306,7 @@ export function ChatFileTreePanel({
         : []
     }
 
-    return state.entries
+    return sortEntries(state.entries, sortMode)
       .filter((entry) => entry.type !== 'directory' || !isChatFileTreeIgnoredDirectory(entry.name))
       .flatMap((entry) => {
         const isDirectory = entry.type === 'directory'
@@ -273,35 +319,40 @@ export function ChatFileTreePanel({
             : <Folder className="h-3.5 w-3.5 shrink-0 text-ds-muted" strokeWidth={1.75} />
           : <FileText className="h-3.5 w-3.5 shrink-0 text-ds-muted" strokeWidth={1.75} />
         const row = (
-          <SidebarTreeRow
+          <div
             key={entry.path}
-            title={previewable || isDirectory ? entry.path : formatChatFileTreeUnsupportedMessage(entry.name)}
-            active={active}
-            onClick={() => {
-              if (isDirectory) {
-                toggleDirectory(entry.path)
-                return
-              }
-              onPreviewFile(entry.path)
-            }}
-            onContextMenu={(event) => openContextMenu(event, entry)}
-            buttonClassName="items-center gap-1.5 py-1.5 pr-1.5 text-[12.5px]"
-            buttonStyle={{ paddingLeft: depth * 14 + 8 }}
-            trailing={
-              isDirectory ? (
-                entryExpanded ? (
-                  <ChevronDown className="h-3.5 w-3.5 text-ds-faint" strokeWidth={1.8} />
-                ) : (
-                  <ChevronRight className="h-3.5 w-3.5 text-ds-faint" strokeWidth={1.8} />
-                )
-              ) : null
-            }
+            draggable
+            onDragStart={(event) => setEntryDragData(event, entry)}
           >
-            {icon}
-            <span className={previewable || isDirectory ? 'min-w-0 truncate' : 'min-w-0 truncate text-ds-faint'}>
-              {entry.name}
-            </span>
-          </SidebarTreeRow>
+            <SidebarTreeRow
+              title={previewable || isDirectory ? entry.path : formatChatFileTreeUnsupportedMessage(entry.name)}
+              active={active}
+              onClick={() => {
+                if (isDirectory) {
+                  toggleDirectory(entry.path)
+                  return
+                }
+                onPreviewFile(entry.path)
+              }}
+              onContextMenu={(event) => openContextMenu(event, entry)}
+              buttonClassName="items-center gap-1.5 py-1.5 pr-1.5 text-[12.5px]"
+              buttonStyle={{ paddingLeft: depth * 14 + 8 }}
+              trailing={
+                isDirectory ? (
+                  entryExpanded ? (
+                    <ChevronDown className="h-3.5 w-3.5 text-ds-faint" strokeWidth={1.8} />
+                  ) : (
+                    <ChevronRight className="h-3.5 w-3.5 text-ds-faint" strokeWidth={1.8} />
+                  )
+                ) : null
+              }
+            >
+              {icon}
+              <span className={previewable || isDirectory ? 'min-w-0 truncate' : 'min-w-0 truncate text-ds-faint'}>
+                {entry.name}
+              </span>
+            </SidebarTreeRow>
+          </div>
         )
         if (!isDirectory || !entryExpanded) return [row]
         return [row, ...renderDirectory(entry.path, depth + 1)]
@@ -319,15 +370,46 @@ export function ChatFileTreePanel({
         label={rootName || t('fileTreeTitle')}
         title={root}
         actions={
-          <SidebarIconButton
-            title={t('fileTreeRefresh')}
-            ariaLabel={t('fileTreeRefresh')}
-            onClick={refresh}
-          >
-            <RefreshCw className="h-3.5 w-3.5" strokeWidth={1.8} />
-          </SidebarIconButton>
+          <>
+            <SidebarIconButton
+              title={sortMode === 'modified' ? 'Sort by name' : 'Sort by modified time'}
+              ariaLabel={sortMode === 'modified' ? 'Sort by name' : 'Sort by modified time'}
+              active={sortMode === 'modified'}
+              onClick={() => setSortMode((mode) => mode === 'modified' ? 'name' : 'modified')}
+            >
+              <span className="text-[11px] font-semibold">{sortMode === 'modified' ? 'MT' : 'AZ'}</span>
+            </SidebarIconButton>
+            <SidebarIconButton
+              title={t('fileTreeRefresh')}
+              ariaLabel={t('fileTreeRefresh')}
+              onClick={refresh}
+            >
+              <RefreshCw className="h-3.5 w-3.5" strokeWidth={1.8} />
+            </SidebarIconButton>
+          </>
         }
       />
+      {recentEntries.length ? (
+        <div className="border-b border-ds-border-muted/60 px-1 pb-2">
+          <div className="px-2.5 pb-1 text-[11px] font-medium text-ds-faint">Recent files</div>
+          <div className="flex flex-col gap-0.5">
+            {recentEntries.map((entry) => (
+              <button
+                key={`recent-${entry.path}`}
+                type="button"
+                draggable
+                onDragStart={(event) => setEntryDragData(event, entry)}
+                onClick={() => onPreviewFile(entry.path)}
+                className="flex min-w-0 items-center gap-1.5 rounded-md px-2.5 py-1 text-left text-[12px] text-ds-muted transition hover:bg-ds-hover hover:text-ds-ink"
+                title={entry.path}
+              >
+                <FileText className="h-3.5 w-3.5 shrink-0" strokeWidth={1.7} />
+                <span className="min-w-0 truncate">{relativeWorkspacePath(entry.path, root)}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
       <div className={`${fill ? 'min-h-0 flex-1' : 'max-h-[34vh] min-h-[96px]'} overflow-y-auto overflow-x-hidden px-1`}>
         {renderDirectory(ROOT_PATH, 0)}
       </div>
