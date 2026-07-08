@@ -61,8 +61,17 @@ type ContextMenuState = {
 
 type FileTreeSortMode = 'name' | 'modified'
 
+type RecentScanState = {
+  entries: WorkspaceEntry[]
+  loading: boolean
+  error: string | null
+}
+
 const ROOT_PATH = ''
 const IGNORED_DIRS = new Set(['.git', '.hg', '.svn', 'node_modules'])
+const RECENT_FILE_LIMIT = 8
+const RECENT_SCAN_MAX_ENTRIES = 2_000
+const RECENT_SCAN_MAX_DEPTH = 8
 
 function normalizePath(path: string): string {
   return path.replaceAll('\\', '/').replace(/\/+$/g, '')
@@ -88,21 +97,32 @@ function entryReference(entry: WorkspaceEntry, workspaceRoot: string): ChatFileT
   }
 }
 
-function compareEntriesByName(left: WorkspaceEntry, right: WorkspaceEntry): number {
+export function compareChatFileTreeEntriesByName(left: WorkspaceEntry, right: WorkspaceEntry): number {
   if (left.type !== right.type) return left.type === 'directory' ? -1 : 1
   return left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' })
 }
 
-function compareEntriesByModified(left: WorkspaceEntry, right: WorkspaceEntry): number {
+export function compareChatFileTreeEntriesByModified(left: WorkspaceEntry, right: WorkspaceEntry): number {
   if (left.type !== right.type) return left.type === 'directory' ? -1 : 1
   const leftTime = left.mtimeMs ?? 0
   const rightTime = right.mtimeMs ?? 0
   if (leftTime !== rightTime) return rightTime - leftTime
-  return compareEntriesByName(left, right)
+  return compareChatFileTreeEntriesByName(left, right)
 }
 
-function sortEntries(entries: WorkspaceEntry[], mode: FileTreeSortMode): WorkspaceEntry[] {
-  return [...entries].sort(mode === 'modified' ? compareEntriesByModified : compareEntriesByName)
+export function sortChatFileTreeEntries(entries: WorkspaceEntry[], mode: FileTreeSortMode): WorkspaceEntry[] {
+  return [...entries].sort(mode === 'modified' ? compareChatFileTreeEntriesByModified : compareChatFileTreeEntriesByName)
+}
+
+function sortRecentFiles(entries: WorkspaceEntry[]): WorkspaceEntry[] {
+  return [...entries]
+    .filter(isChatFileTreePreviewableEntry)
+    .sort((left, right) => {
+      const leftTime = left.mtimeMs ?? 0
+      const rightTime = right.mtimeMs ?? 0
+      if (leftTime !== rightTime) return rightTime - leftTime
+      return compareChatFileTreeEntriesByName(left, right)
+    })
 }
 
 export function isChatFileTreeIgnoredDirectory(name: string): boolean {
@@ -129,6 +149,7 @@ export function ChatFileTreePanel({
   const [directories, setDirectories] = useState<Record<string, DirectoryState>>({})
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null)
   const [sortMode, setSortMode] = useState<FileTreeSortMode>('name')
+  const [recentScan, setRecentScan] = useState<RecentScanState>({ entries: [], loading: false, error: null })
   const menuRef = useRef<HTMLDivElement | null>(null)
   const root = workspaceRoot.trim()
   const rootName = useMemo(() => workspaceDisplayName(root), [root])
@@ -137,6 +158,7 @@ export function ChatFileTreePanel({
     setExpanded(new Set([ROOT_PATH]))
     setDirectories({})
     setContextMenu(null)
+    setRecentScan({ entries: [], loading: false, error: null })
   }, [root])
 
   const loadDirectory = useCallback((path: string): void => {
@@ -182,6 +204,62 @@ export function ChatFileTreePanel({
   }, [directories, expanded, loadDirectory, root])
 
   useEffect(() => {
+    if (!root || typeof window.kunGui?.listWorkspaceDirectory !== 'function') return
+    let cancelled = false
+    setRecentScan({ entries: [], loading: true, error: null })
+
+    const scanDirectory = async (
+      path: string,
+      depth: number,
+      collected: WorkspaceEntry[],
+      seenDirectories: Set<string>
+    ): Promise<void> => {
+      if (cancelled || depth > RECENT_SCAN_MAX_DEPTH || collected.length >= RECENT_SCAN_MAX_ENTRIES) return
+      const directoryKey = pathKey(path || root)
+      if (seenDirectories.has(directoryKey)) return
+      seenDirectories.add(directoryKey)
+      const result = await window.kunGui.listWorkspaceDirectory({ workspaceRoot: root, path: path || root })
+      if (!result.ok) throw new Error(result.message)
+      for (const entry of result.entries) {
+        if (cancelled || collected.length >= RECENT_SCAN_MAX_ENTRIES) return
+        if (entry.type === 'directory') {
+          if (!isChatFileTreeIgnoredDirectory(entry.name)) {
+            await scanDirectory(entry.path, depth + 1, collected, seenDirectories)
+          }
+          continue
+        }
+        if (isChatFileTreePreviewableEntry(entry)) collected.push(entry)
+      }
+    }
+
+    void (async () => {
+      try {
+        const collected: WorkspaceEntry[] = []
+        await scanDirectory(root, 0, collected, new Set())
+        if (!cancelled) {
+          setRecentScan({
+            entries: sortRecentFiles(collected).slice(0, RECENT_FILE_LIMIT),
+            loading: false,
+            error: null
+          })
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setRecentScan({
+            entries: [],
+            loading: false,
+            error: error instanceof Error ? error.message : String(error)
+          })
+        }
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [root])
+
+  useEffect(() => {
     if (!contextMenu) return
     const onPointerDown = (event: PointerEvent): void => {
       const target = event.target
@@ -200,20 +278,7 @@ export function ChatFileTreePanel({
   }, [contextMenu])
 
   const selectedKey = useMemo(() => pathKey(selectedPath ?? ''), [selectedPath])
-  const recentEntries = useMemo(() => {
-    const seen = new Set<string>()
-    return Object.values(directories)
-      .flatMap((state) => state.entries)
-      .filter(isChatFileTreePreviewableEntry)
-      .filter((entry) => {
-        const key = pathKey(entry.path)
-        if (seen.has(key)) return false
-        seen.add(key)
-        return true
-      })
-      .sort(compareEntriesByModified)
-      .slice(0, 8)
-  }, [directories])
+  const recentEntries = recentScan.entries
 
   if (!root) return null
 
@@ -229,6 +294,7 @@ export function ChatFileTreePanel({
   const refresh = (): void => {
     setDirectories({})
     setExpanded(new Set([ROOT_PATH]))
+    setRecentScan({ entries: [], loading: false, error: null })
   }
 
   const addReference = (entry: WorkspaceEntry): void => {
@@ -306,7 +372,7 @@ export function ChatFileTreePanel({
         : []
     }
 
-    return sortEntries(state.entries, sortMode)
+    return sortChatFileTreeEntries(state.entries, sortMode)
       .filter((entry) => entry.type !== 'directory' || !isChatFileTreeIgnoredDirectory(entry.name))
       .flatMap((entry) => {
         const isDirectory = entry.type === 'directory'
@@ -363,6 +429,9 @@ export function ChatFileTreePanel({
   const contextLabel = contextEntry?.type === 'directory'
     ? t('fileTreeAddFolderReference')
     : t('fileTreeAddFileReference')
+  const sortTitle = sortMode === 'modified'
+    ? t('fileTreeSortByName', { defaultValue: 'Sort by name' })
+    : t('fileTreeSortByModifiedTime', { defaultValue: 'Sort by modified time' })
 
   return (
     <div className={`ds-no-drag min-h-0 ${fill ? 'flex h-full flex-col' : ''}`}>
@@ -372,8 +441,8 @@ export function ChatFileTreePanel({
         actions={
           <>
             <SidebarIconButton
-              title={sortMode === 'modified' ? 'Sort by name' : 'Sort by modified time'}
-              ariaLabel={sortMode === 'modified' ? 'Sort by name' : 'Sort by modified time'}
+              title={sortTitle}
+              ariaLabel={sortTitle}
               active={sortMode === 'modified'}
               onClick={() => setSortMode((mode) => mode === 'modified' ? 'name' : 'modified')}
             >
@@ -389,11 +458,22 @@ export function ChatFileTreePanel({
           </>
         }
       />
-      {recentEntries.length ? (
+      {recentEntries.length || recentScan.loading || recentScan.error ? (
         <div className="border-b border-ds-border-muted/60 px-1 pb-2">
-          <div className="px-2.5 pb-1 text-[11px] font-medium text-ds-faint">Recent files</div>
+          <div className="px-2.5 pb-1 text-[11px] font-medium text-ds-faint">
+            {t('fileTreeRecentModifiedFiles', { defaultValue: 'Recent modified files' })}
+          </div>
           <div className="flex flex-col gap-0.5">
-            {recentEntries.map((entry) => (
+            {recentScan.loading ? (
+              <div className="flex items-center gap-2 px-2.5 py-1 text-[12px] text-ds-muted">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.8} />
+                {t('fileTreeScanningRecent', { defaultValue: 'Scanning workspace…' })}
+              </div>
+            ) : recentScan.error ? (
+              <div className="px-2.5 py-1 text-[12px] text-red-700 dark:text-red-300" title={recentScan.error}>
+                {recentScan.error}
+              </div>
+            ) : recentEntries.map((entry) => (
               <button
                 key={`recent-${entry.path}`}
                 type="button"
