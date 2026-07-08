@@ -11,10 +11,34 @@ const STYLE_ID = 'kun-issue-781-document-usability-style'
 const PINNED_TABS_KEY = 'kun.issue781.pinnedPreviewTabs'
 const SCROLL_POSITIONS_KEY = 'kun.issue781.previewScrollPositions'
 
+const LABELS = {
+  zh: {
+    pinTab: '固定标签',
+    unpinTab: '取消固定标签',
+    closeOtherTabs: '关闭其他标签页',
+    read: '阅读',
+    exitRead: '退出阅读',
+    expandRead: '放大阅读'
+  },
+  en: {
+    pinTab: 'Pin tab',
+    unpinTab: 'Unpin tab',
+    closeOtherTabs: 'Close other tabs',
+    read: 'Read',
+    exitRead: 'Exit reading',
+    expandRead: 'Expand reading'
+  }
+} as const
+
 let installed = false
 let observer: MutationObserver | null = null
 let scanTimer: number | null = null
 let menuEl: HTMLDivElement | null = null
+
+function label(key: keyof typeof LABELS.en): string {
+  const language = document.documentElement.lang || navigator.language || ''
+  return language.toLowerCase().startsWith('zh') ? LABELS.zh[key] : LABELS.en[key]
+}
 
 function readJson<T>(key: string, fallback: T): T {
   try {
@@ -125,8 +149,23 @@ function tabKey(tab: Element | null): string {
   return tab instanceof HTMLElement ? (tab.title || tab.textContent || '').trim() : ''
 }
 
+function tabScopeKey(tab: Element | null): string {
+  if (!(tab instanceof HTMLElement)) return ''
+  const rawKey = tabKey(tab)
+  if (!rawKey) return ''
+  const sidebar = tab.closest('.ds-code-sidebar')
+  const explicitWorkspaceRoot = sidebar instanceof HTMLElement
+    ? sidebar.getAttribute('data-kun-workspace-root')
+    : ''
+  const explicitPreviewKey = tab.getAttribute('data-kun-preview-key')
+  const fallbackPageScope = `${window.location.origin}${window.location.pathname}`
+  return `${explicitWorkspaceRoot || fallbackPageScope}\n${explicitPreviewKey || rawKey}`
+    .replaceAll('\\', '/')
+    .toLowerCase()
+}
+
 function activeTabKey(): string {
-  return tabKey(document.querySelector('.ds-code-sidebar-tab.is-active'))
+  return tabScopeKey(document.querySelector('.ds-code-sidebar-tab.is-active'))
 }
 
 function pinnedTabs(): string[] {
@@ -203,7 +242,7 @@ function scanRenderedOutput(): void {
 function applyPinnedClasses(): void {
   const pinned = new Set(pinnedTabs())
   document.querySelectorAll('.ds-code-sidebar-tab').forEach((tab) => {
-    tab.classList.toggle('kun-issue781-pinned', pinned.has(tabKey(tab)))
+    tab.classList.toggle('kun-issue781-pinned', pinned.has(tabScopeKey(tab)))
   })
 }
 
@@ -214,7 +253,8 @@ function closeIssue781Menu(): void {
 
 function showTabMenu(tab: HTMLElement, x: number, y: number): void {
   closeIssue781Menu()
-  const key = tabKey(tab)
+  const key = tabScopeKey(tab)
+  if (!key) return
   const pinned = new Set(pinnedTabs())
   const menu = document.createElement('div')
   menu.className = 'kun-issue781-menu'
@@ -222,10 +262,10 @@ function showTabMenu(tab: HTMLElement, x: number, y: number): void {
   menu.style.top = `${y}px`
   const pinButton = document.createElement('button')
   pinButton.type = 'button'
-  pinButton.textContent = pinned.has(key) ? '取消固定标签' : '固定标签'
+  pinButton.textContent = pinned.has(key) ? label('unpinTab') : label('pinTab')
   const closeOthersButton = document.createElement('button')
   closeOthersButton.type = 'button'
-  closeOthersButton.textContent = '关闭其他标签页'
+  closeOthersButton.textContent = label('closeOtherTabs')
   pinButton.addEventListener('click', () => {
     if (pinned.has(key)) pinned.delete(key)
     else pinned.add(key)
@@ -236,7 +276,7 @@ function showTabMenu(tab: HTMLElement, x: number, y: number): void {
   closeOthersButton.addEventListener('click', () => {
     const pinnedNow = new Set(pinnedTabs())
     document.querySelectorAll('.ds-code-sidebar-tab').forEach((item) => {
-      const itemKey = tabKey(item)
+      const itemKey = tabScopeKey(item)
       if (item === tab || pinnedNow.has(itemKey)) return
       const close = item.querySelector('.ds-code-sidebar-tab-close')
       if (close instanceof HTMLButtonElement) close.click()
@@ -295,9 +335,10 @@ function setReadingMode(enabled: boolean): void {
   sidebar.classList.toggle('kun-issue781-reader-mode', enabled)
   const button = sidebar.querySelector('.kun-issue781-expand-button')
   if (button instanceof HTMLButtonElement) {
-    button.textContent = enabled ? '退出阅读' : '阅读'
-    button.title = enabled ? '退出阅读' : '放大阅读'
-    button.ariaLabel = button.title
+    const title = enabled ? label('exitRead') : label('expandRead')
+    button.textContent = enabled ? label('exitRead') : label('read')
+    button.title = title
+    button.setAttribute('aria-label', title)
   }
 }
 
@@ -307,9 +348,9 @@ function enhanceReadingButton(): void {
   const button = document.createElement('button')
   button.type = 'button'
   button.className = 'kun-issue781-expand-button ds-code-sidebar-icon-button'
-  button.title = '放大阅读'
-  button.ariaLabel = '放大阅读'
-  button.textContent = '阅读'
+  button.title = label('expandRead')
+  button.setAttribute('aria-label', label('expandRead'))
+  button.textContent = label('read')
   button.addEventListener('click', (event) => {
     event.preventDefault()
     event.stopPropagation()
