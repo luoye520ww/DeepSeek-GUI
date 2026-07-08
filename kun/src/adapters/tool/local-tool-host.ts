@@ -28,6 +28,11 @@ import {
   type ReadTrackerOptions
 } from './read-tracker.js'
 import { sandboxBlockForTool, type SandboxBlock } from './sandbox-policy.js'
+import {
+  createToolOperationIdentity,
+  ToolOperationJournal,
+  type ToolOperationIdentity
+} from '../../reliability/operation-journal.js'
 
 /**
  * A single registered tool. Tools are pure functions that observe the
@@ -67,6 +72,11 @@ export type LocalToolHostOptions = {
   hooks?: readonly ResolvedHook[]
   /** Runtime read-before-edit guard. Disabled by default for direct unit use. */
   readTracker?: boolean | ReadTrackerOptions
+  /**
+   * Turn-scoped operation journal. Defaults to an in-memory journal so fallback
+   * call ids such as `call_1` are isolated by turnId/toolName/argsHash.
+   */
+  operationJournal?: ToolOperationJournal
 }
 
 /**
@@ -89,12 +99,14 @@ export class LocalToolHost implements ToolHost {
   private readonly allowList: Set<string>
   private hooks: readonly ResolvedHook[]
   private readonly readTracker: ReadTracker
+  private readonly operationJournal: ToolOperationJournal
 
   constructor(options: LocalToolHostOptions) {
     this.registry = options.registry ?? CapabilityRegistry.fromLocalTools(options.tools ?? [])
     this.allowList = new Set(options.allowList ?? [])
     this.hooks = options.hooks ?? []
     this.readTracker = new ReadTracker(normalizeReadTrackerOptions(options.readTracker))
+    this.operationJournal = options.operationJournal ?? new ToolOperationJournal()
   }
 
   replaceRuntimeComponents(input: {
@@ -197,6 +209,23 @@ export class LocalToolHost implements ToolHost {
     if (context.abortSignal.aborted) {
       throw new Error('tool call aborted while waiting for approval')
     }
+
+    const operationIdentity = createToolOperationIdentity({
+      threadId: context.threadId,
+      turnId: context.turnId,
+      callId: activeCall.callId,
+      toolName: activeCall.toolName,
+      args: activeCall.arguments
+    })
+    const replayed = this.operationJournal.getCompleted(operationIdentity)
+    if (replayed) {
+      return {
+        item: this.completedToolResult(context, activeCall, tool, replayed.output, replayed.isError),
+        approved: !needsApproval
+      }
+    }
+    this.operationJournal.begin(operationIdentity)
+
     let result: Awaited<ReturnType<LocalTool['execute']>>
     try {
       result = await tool.execute(activeCall.arguments, context, async (update) => {
@@ -218,7 +247,11 @@ export class LocalToolHost implements ToolHost {
       // A tool blowing up (an MCP server returning a protocol error, a
       // provider bug) is feedback for the model, not a reason to kill the
       // whole turn. Only abort keeps propagating.
-      if (context.abortSignal.aborted) throw error
+      if (context.abortSignal.aborted) {
+        this.operationJournal.unknown(operationIdentity, 'tool call aborted during execution')
+        throw error
+      }
+      this.operationJournal.fail(operationIdentity, error)
       const message = error instanceof Error ? error.message : String(error)
       return {
         item: this.errorToolResult(context, activeCall, tool, message, 'tool_execution_failed'),
@@ -233,6 +266,7 @@ export class LocalToolHost implements ToolHost {
         result
       })
     } catch (error) {
+      this.operationJournal.fail(operationIdentity, error)
       return {
         item: this.errorToolResult(context, activeCall, tool, hookErrorMessage(error), 'hook_failed'),
         approved: true
@@ -248,16 +282,8 @@ export class LocalToolHost implements ToolHost {
       isError
     })
     if (!isError) output = await offloadLargeToolOutput(output, activeCall.toolName, context)
-    const item = makeToolResultItem({
-      id: `item_${activeCall.callId}`,
-      turnId: context.turnId,
-      threadId: context.threadId,
-      callId: activeCall.callId,
-      toolName: activeCall.toolName,
-      toolKind: activeCall.toolKind ?? tool.toolKind,
-      output,
-      isError
-    })
+    this.operationJournal.complete(operationIdentity, { output, isError })
+    const item = this.completedToolResult(context, activeCall, tool, output, isError)
     return { item, approved: !needsApproval }
   }
 
@@ -310,6 +336,25 @@ export class LocalToolHost implements ToolHost {
       .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
       .join(', ')
     return `Run ${call.toolName}(${args})`
+  }
+
+  private completedToolResult(
+    context: ToolHostContext,
+    call: ToolCallLike,
+    tool: LocalTool,
+    output: unknown,
+    isError?: boolean
+  ): TurnItem {
+    return makeToolResultItem({
+      id: `item_${call.callId}`,
+      turnId: context.turnId,
+      threadId: context.threadId,
+      callId: call.callId,
+      toolName: call.toolName,
+      toolKind: call.toolKind ?? tool.toolKind,
+      output,
+      isError
+    })
   }
 
   private errorToolResult(
@@ -430,164 +475,62 @@ function createUserInputTool(name: string): LocalTool {
   }
   return LocalToolHost.defineTool({
     name,
-    description: 'Ask the GUI user a structured question and wait for the answer.',
+    description: 'Ask the user to choose or provide input before continuing.',
     toolKind: 'tool_call',
+    policy: 'auto',
     inputSchema: {
       type: 'object',
       properties: {
         prompt: { type: 'string' },
-        question: { type: 'string' },
-        message: { type: 'string' },
         options: {
           type: 'array',
-          description: 'Optional answer choices for a single question. Use strings or {label, description} objects.',
           items: optionSchema
         },
-        questions: {
-          type: 'array',
-          description: 'One to three structured questions. Each question may include answer options.',
-          items: {
-            type: 'object',
-            properties: {
-              header: { type: 'string' },
-              id: { type: 'string' },
-              question: { type: 'string' },
-              options: {
-                type: 'array',
-                items: optionSchema
-              }
-            },
-            required: ['question']
-          }
-        }
+        allowFreeText: { type: 'boolean' }
       },
-      required: []
+      required: ['prompt']
     },
-    policy: 'auto',
     execute: async (args, context) => {
       if (!context.awaitUserInput) {
         return {
-          output: { error: 'GUI user input is not available in this runtime context' },
+          output: { error: 'User input is not available in this environment.' },
           isError: true
         }
       }
-      const inputId = `in_${Math.random().toString(36).slice(2, 10)}`
-      const itemId = `item_${inputId}`
-      const prompt = String(args.prompt ?? args.question ?? args.message ?? 'Input requested')
-      const questions = normalizeUserInputQuestions(args, inputId, prompt)
-      const resolution = await context.awaitUserInput({ id: inputId, itemId, prompt, questions })
-      return {
-        output: resolution,
-        isError: resolution.status === 'cancelled'
-      }
+      const prompt = typeof args.prompt === 'string' ? args.prompt : 'Please provide input.'
+      const options = Array.isArray(args.options)
+        ? args.options
+            .map((option) => {
+              if (typeof option === 'string') return { label: option }
+              if (option && typeof option === 'object') {
+                const value = option as { label?: unknown; description?: unknown }
+                if (typeof value.label === 'string') {
+                  return {
+                    label: value.label,
+                    ...(typeof value.description === 'string' ? { description: value.description } : {})
+                  }
+                }
+              }
+              return null
+            })
+            .filter((option): option is { label: string; description?: string } => option !== null)
+        : []
+      const resolution = await context.awaitUserInput({
+        toolName: name,
+        prompt,
+        ...(options.length ? { options } : {}),
+        allowFreeText: Boolean(args.allowFreeText)
+      })
+      return { output: resolution }
     }
   })
 }
 
-export const userInputTool: LocalTool = createUserInputTool('user_input')
-export const requestUserInputTool: LocalTool = createUserInputTool('request_user_input')
-
-export const defaultLocalTools: LocalTool[] = [
-  ...buildBuiltinLocalTools(),
-  echoTool,
-  userInputTool,
-  requestUserInputTool
-]
-
-function normalizeUserInputQuestions(
-  args: Record<string, unknown>,
-  fallbackId: string,
-  fallbackPrompt: string
-): Array<{
-  header: string
-  id: string
-  question: string
-  options: Array<{ label: string; description: string }>
-}> {
-  const rawQuestions = Array.isArray(args.questions) ? args.questions : null
-  if (rawQuestions && rawQuestions.length > 0) {
-    const questions = rawQuestions
-      .map((question, index) => normalizeUserInputQuestion(question, index, fallbackId))
-      .filter((question) => question !== null)
-    if (questions.length > 0) return questions
-  }
-  const options = Array.isArray(args.options)
-    ? args.options
-        .map((option) => normalizeUserInputOption(option))
-        .filter((option) => option !== null)
-    : []
+export function buildDefaultLocalTools(options: BuiltinLocalToolsOptions = {}): LocalTool[] {
   return [
-    {
-      header: 'Input',
-      id: String(args.id ?? fallbackId),
-      question: fallbackPrompt,
-      options
-    }
+    ...buildBuiltinLocalTools(options),
+    echoTool,
+    createUserInputTool('request_user_input'),
+    createUserInputTool('user_input')
   ]
-}
-
-function normalizeUserInputQuestion(
-  value: unknown,
-  index: number,
-  fallbackId: string
-): {
-  header: string
-  id: string
-  question: string
-  options: Array<{ label: string; description: string }>
-} | null {
-  if (!value || typeof value !== 'object') return null
-  const raw = value as Record<string, unknown>
-  const question = typeof raw.question === 'string' && raw.question.trim()
-    ? raw.question.trim()
-    : null
-  if (!question) return null
-  const options = Array.isArray(raw.options)
-    ? raw.options
-        .map((option) => normalizeUserInputOption(option))
-        .filter((option) => option !== null)
-    : []
-  return {
-    header: typeof raw.header === 'string' && raw.header.trim() ? raw.header.trim() : `Question ${index + 1}`,
-    id: typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim() : `${fallbackId}_${index + 1}`,
-    question,
-    options
-  }
-}
-
-function normalizeUserInputOption(
-  value: unknown
-): { label: string; description: string } | null {
-  if (typeof value === 'string' && value.trim()) {
-    return {
-      label: value.trim(),
-      description: ''
-    }
-  }
-  if (!value || typeof value !== 'object') return null
-  const raw = value as Record<string, unknown>
-  const label = typeof raw.label === 'string' && raw.label.trim() ? raw.label.trim() : null
-  if (!label) return null
-  return {
-    label,
-    description: typeof raw.description === 'string' ? raw.description : ''
-  }
-}
-
-import { createCreatePlanTool, type CreatePlanAdapterOptions } from './create-plan-tool.js'
-
-/**
- * Build the default tool list including the `create_plan` tool. The
- * `create_plan` tool is gated to plan/refine turns via its
- * `shouldAdvertise` predicate, so it is safe to ship with the
- * default set: non-plan turns never see it in the model tool list.
- */
-export function buildDefaultLocalTools(
-  planOptions: CreatePlanAdapterOptions = {},
-  builtinOptions: BuiltinLocalToolsOptions = {}
-): LocalTool[] {
-  const baseTools = Object.keys(builtinOptions).length
-    ? [...buildBuiltinLocalTools(builtinOptions), echoTool, userInputTool, requestUserInputTool]
-    : defaultLocalTools
-  return [...baseTools, createCreatePlanTool(planOptions)]
 }
