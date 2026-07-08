@@ -10,6 +10,8 @@ export type WorkspaceEntry = {
   path: string
   type: 'file' | 'directory'
   ext: string
+  mtimeMs?: number
+  size?: number
 }
 
 export type WorkspaceDirectoryTarget = {
@@ -219,7 +221,6 @@ export type WorkspaceFileCreateResult =
   | {
       ok: true
       path: string
-      createdAt: string
     }
   | { ok: false; message: string }
 
@@ -227,7 +228,6 @@ export type WorkspaceDirectoryCreateResult =
   | {
       ok: true
       path: string
-      createdAt: string
     }
   | { ok: false; message: string }
 
@@ -235,56 +235,11 @@ export type WorkspaceEntryRenameResult =
   | {
       ok: true
       path: string
-      previousPath: string
-      renamedAt: string
     }
   | { ok: false; message: string }
 
 export type WorkspaceEntryDeleteResult =
   | {
       ok: true
-      path: string
-      deletedAt: string
     }
   | { ok: false; message: string }
-
-export type WorkspaceFileWatchResult =
-  | {
-      ok: true
-      watchId: string
-      path: string
-      content: string
-      size: number
-      truncated: boolean
-      startedAt: string
-    }
-  | { ok: false; message: string }
-
-export type WorkspaceClipboardImageSaveResult =
-  | {
-      ok: true
-      path: string
-      markdownPath: string
-      createdAt: string
-    }
-  | { ok: false; message: string }
-
-export type WorkspaceFileChangePayload =
-  | {
-      ok: true
-      watchId: string
-      workspaceRoot: string
-      path: string
-      content: string
-      size: number
-      truncated: boolean
-      changedAt: string
-    }
-  | {
-      ok: false
-      watchId: string
-      workspaceRoot: string
-      path: string
-      message: string
-      changedAt: string
-    }
