@@ -361,6 +361,22 @@ describe('cli', () => {
     expect(parsed.insecure).toBe(true)
   })
 
+  it('parses explicit safe-mode from CLI, environment, and config', async () => {
+    expect(parseServeOptions(['--data-dir', '/tmp/kun']).safeMode).toBe(false)
+    expect(parseServeOptions(['--data-dir', '/tmp/kun', '--safe-mode']).safeMode).toBe(true)
+    expect(parseServeOptions(['--data-dir', '/tmp/kun'], { KUN_SAFE_MODE: 'true' }).safeMode).toBe(true)
+
+    const dir = await mkdtemp(join(tmpdir(), 'kun-safe-mode-config-'))
+    try {
+      const configPath = join(dir, 'config.json')
+      await writeFile(configPath, JSON.stringify({ serve: { safeMode: true } }), 'utf8')
+      expect(parseServeOptions(['--config', configPath, '--data-dir', '/tmp/kun']).safeMode).toBe(true)
+      expect(parseServeOptions(['--config', configPath, '--data-dir', '/tmp/kun', '--safe-mode=false']).safeMode).toBe(false)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
   it('rejects insecure serve on a non-loopback host', () => {
     expect(() => parseServeOptions([
       '--data-dir', '/tmp/kun',

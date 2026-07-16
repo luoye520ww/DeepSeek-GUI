@@ -49,6 +49,7 @@ async function serveMain(argv: readonly string[]): Promise<number> {
     model: info.model,
     approvalPolicy: info.approvalPolicy,
     sandboxMode: info.sandboxMode,
+    safeMode: info.safeMode,
     insecure: info.insecure,
     startedAt: info.startedAt,
     pid: info.pid,

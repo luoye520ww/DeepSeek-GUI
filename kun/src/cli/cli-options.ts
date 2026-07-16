@@ -62,6 +62,7 @@ export const ServeOptionsSchema = z.object({
   tokenEconomyMode: z.boolean().default(false),
   tokenEconomy: TokenEconomyConfigSchema.optional(),
   toolOutputLimits: ToolOutputLimitsConfigSchema.default(DEFAULT_TOOL_OUTPUT_LIMITS_CONFIG),
+  safeMode: z.boolean().default(false),
   insecure: z.boolean().default(false),
   storage: StorageConfigSchema.default(DEFAULT_STORAGE_CONFIG),
   observability: ObservabilityConfigSchema.optional(),
@@ -99,6 +100,7 @@ export const DEFAULT_SERVE_OPTIONS: ServeOptions = {
   sandboxMode: DEFAULT_SANDBOX_MODE,
   tokenEconomyMode: false,
   toolOutputLimits: DEFAULT_TOOL_OUTPUT_LIMITS_CONFIG,
+  safeMode: false,
   insecure: false,
   storage: DEFAULT_STORAGE_CONFIG,
   capabilities: DEFAULT_KUN_CAPABILITIES_CONFIG

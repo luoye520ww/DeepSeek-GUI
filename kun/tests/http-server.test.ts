@@ -141,6 +141,37 @@ describe('HTTP server', () => {
     expect(h.runtime.applyConfig).not.toHaveBeenCalled()
   })
 
+  it('returns restart-required for a safe-mode hot apply', async () => {
+    const h = buildHarness()
+    const applyConfig = vi.fn(async () => ({
+      ok: false as const,
+      code: 'restart_required' as const,
+      message: 'safe mode changes require a runtime restart'
+    }))
+    h.runtime.applyConfig = applyConfig
+    const response = await dispatchRequest(
+      h.router,
+      new Request('http://localhost/v1/runtime/config/apply', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer tok-1',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({ serve: { safeMode: true } })
+      })
+    )
+
+    expect(response.status).toBe(409)
+    expect(await readJson(response)).toEqual({
+      ok: false,
+      code: 'restart_required',
+      message: 'safe mode changes require a runtime restart'
+    })
+    expect(applyConfig).toHaveBeenCalledWith(expect.objectContaining({
+      serve: expect.objectContaining({ safeMode: true })
+    }))
+  })
+
   it('rejects process-level runtime fields on the hot apply route', async () => {
     const h = buildHarness()
     h.runtime.applyConfig = vi.fn(async () => ({ ok: true as const }))

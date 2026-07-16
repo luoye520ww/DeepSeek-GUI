@@ -14,6 +14,8 @@ export const RuntimeInfoResponse = z
     approvalPolicy: ApprovalPolicySchema.optional(),
     sandboxMode: SandboxModeSchema.optional(),
     tokenEconomyMode: z.boolean().optional(),
+    /** True when the process was started with the restrictive recovery overlay. */
+    safeMode: z.boolean().optional(),
     insecure: z.boolean().optional(),
     startedAt: z.string(),
     pid: z.number().int().positive().optional(),

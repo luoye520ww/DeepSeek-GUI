@@ -47,6 +47,7 @@ import { LocalWorkspaceInspector } from '../adapters/workspace/local-workspace-i
 import { createImmutablePrefix } from '../cache/immutable-prefix.js'
 import {
   buildRuntimeCapabilityManifest,
+  DEFAULT_KUN_CAPABILITIES_CONFIG,
   type KunCapabilitiesConfig
 } from '../contracts/capabilities.js'
 import type { ApprovalPolicy, SandboxMode } from '../contracts/policy.js'
@@ -183,6 +184,8 @@ export type KunServeRuntimeOptions = {
   tokenEconomyMode: boolean
   tokenEconomy?: TokenEconomyConfig
   toolOutputLimits?: ToolOutputLimitsConfig
+  /** Restricted recovery mode for a crash-looped managed runtime. */
+  safeMode?: boolean
   insecure: boolean
   models?: ModelConfig
   contextCompaction?: ContextCompactionConfig
@@ -214,7 +217,7 @@ export async function createKunServeRuntime(
   options: KunServeRuntimeOptions
 ): Promise<ServerRuntime> {
   await mkdir(options.dataDir, { recursive: true, mode: 0o700 })
-  let activeOptions: KunServeRuntimeOptions = { ...options }
+  let activeOptions: KunServeRuntimeOptions = applySafeModeRuntimeRestrictions(options)
   const eventBus = new InMemoryEventBus()
   const eventStreamRegistry = new ThreadEventStreamRegistry()
   const stores = await createPersistentStores({
@@ -1011,6 +1014,7 @@ export async function createKunServeRuntime(
 	    return outcomes.every((outcome) => outcome.status === 'fulfilled')
 	  }
 	  prepareExtensionContributions = async (context) => {
+	    if (activeOptions.safeMode) return
 	    const key = context?.workspace ?? '__global__'
 	    const document = await extensionRegistry.read()
 	    const existing = extensionPreparations.get(key)
@@ -1111,6 +1115,16 @@ export async function createKunServeRuntime(
 	    request: RuntimeConfigApplyRequest
 	  ): Promise<RuntimeConfigApplyResponse> => {
 	    if (
+	      request.serve?.safeMode !== undefined &&
+	      request.serve.safeMode !== activeOptions.safeMode
+	    ) {
+	      return {
+	        ok: false,
+	        code: 'restart_required',
+	        message: 'safe mode changes require a runtime restart'
+	      }
+	    }
+	    if (
 	      request.serve?.observability !== undefined &&
 	      !isDeepStrictEqual(request.serve.observability, activeOptions.observability ?? {})
 	    ) {
@@ -1120,9 +1134,11 @@ export async function createKunServeRuntime(
 	        message: 'observability exporter changes require a runtime restart'
 	      }
 	    }
-	    const nextOptions = await hydrateLegacyCredentialOptions(
-	      mergeRuntimeConfigApplyOptions(activeOptions, request),
-	      legacyCredentialMigration
+	    const nextOptions = applySafeModeRuntimeRestrictions(
+	      await hydrateLegacyCredentialOptions(
+	        mergeRuntimeConfigApplyOptions(activeOptions, request),
+	        legacyCredentialMigration
+	      )
 	    )
 	    const nextAgentSdkSignature = agentSdkProviderSignature(nextOptions)
 	    if (nextAgentSdkSignature !== agentSdkSignature) {
@@ -1429,6 +1445,7 @@ export async function createKunServeRuntime(
 	        approvalPolicy: activeOptions.approvalPolicy,
 	        sandboxMode: activeOptions.sandboxMode,
 	        tokenEconomyMode: activeOptions.tokenEconomyMode,
+	        safeMode: activeOptions.safeMode === true,
 	        insecure: activeOptions.insecure,
         startedAt,
         pid: process.pid,
@@ -1645,6 +1662,7 @@ function mergeRuntimeConfigApplyOptions(
     tokenEconomyMode: serve.tokenEconomyMode ?? current.tokenEconomyMode,
     tokenEconomy: serve.tokenEconomy ?? current.tokenEconomy,
     toolOutputLimits: serve.toolOutputLimits ?? current.toolOutputLimits,
+    safeMode: serve.safeMode ?? current.safeMode,
     models: request.models ?? current.models,
     contextCompaction: request.contextCompaction ?? current.contextCompaction,
     runtime: request.runtime ?? current.runtime,
@@ -1652,6 +1670,30 @@ function mergeRuntimeConfigApplyOptions(
     capabilities: request.capabilities ?? current.capabilities,
     hooks: request.hooks ?? current.hooks,
     quality: request.quality ?? current.quality
+  }
+}
+
+/**
+ * Safe Mode is intentionally a runtime overlay, never a rewrite of the
+ * user's persisted capabilities. It isolates the two automatic third-party
+ * activation paths that can make a crash loop self-sustaining: MCP transports
+ * and extension-host contributions. Built-in tools and the selected model stay
+ * available so recovery remains useful.
+ */
+function applySafeModeRuntimeRestrictions(options: KunServeRuntimeOptions): KunServeRuntimeOptions {
+  const safeMode = options.safeMode === true
+  if (!safeMode) return { ...options, safeMode: false }
+  const capabilities = options.capabilities ?? DEFAULT_KUN_CAPABILITIES_CONFIG
+  return {
+    ...options,
+    safeMode: true,
+    capabilities: {
+      ...capabilities,
+      mcp: {
+        ...capabilities.mcp,
+        enabled: false
+      }
+    }
   }
 }
 

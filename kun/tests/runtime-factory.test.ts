@@ -133,9 +133,10 @@ describe('runtime factory usage carryover', () => {
         apiVersions: ['1.0.0'],
         manifestVersions: [1]
       })
+      expect(runtime.info().safeMode).toBe(false)
       expect(runtime.info().capabilities.instructions.enabled).toBe(true)
       const applied = await runtime.applyConfig({
-        serve: { model: 'model-after' },
+        serve: { model: 'model-after', safeMode: false },
         capabilities: KunCapabilitiesConfig.parse({
           web: { enabled: true, fetchEnabled: true },
           instructions: { enabled: false }
@@ -144,6 +145,7 @@ describe('runtime factory usage carryover', () => {
 
       expect(applied).toEqual({ ok: true })
       expect(runtime.info().model).toBe('model-after')
+      expect(runtime.info().safeMode).toBe(false)
       expect(runtime.info().capabilities.web.fetch.available).toBe(true)
       expect(runtime.info().capabilities.instructions).toMatchObject({ enabled: false, status: 'disabled' })
       const diagnostics = await runtime.toolDiagnostics?.()
@@ -299,6 +301,76 @@ describe('runtime factory usage carryover', () => {
       await runtime.shutdown?.()
     }
   })
+
+  it('does not auto-activate third-party extensions while safe mode is active', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'kun-runtime-safe-mode-'))
+    const sourceDir = await mkdtemp(join(tmpdir(), 'kun-runtime-safe-mode-extension-'))
+    tempDirs.push(dataDir, sourceDir)
+    await writeLazyToolExtension(sourceDir)
+    const runnerPath = await writeLazyFixtureRunner(sourceDir)
+    const configuredCapabilities = KunCapabilitiesConfig.parse({
+      mcp: {
+        enabled: true,
+        servers: {
+          thirdParty: {
+            enabled: true,
+            transport: 'stdio',
+            command: 'must-not-run-in-safe-mode',
+            trustScope: 'user'
+          }
+        },
+        search: { enabled: false }
+      },
+      subagents: { enabled: true, maxParallel: 1, maxChildRuns: 1 },
+      web: { enabled: true, fetchEnabled: true, searchEnabled: true },
+      computerUse: { enabled: true }
+    })
+    const runtime = await createKunServeRuntime({
+      host: '127.0.0.1',
+      port: 0,
+      dataDir,
+      runtimeToken: 'tok',
+      apiKey: 'sk-default',
+      baseUrl: 'https://api.example.test/v1',
+      model: 'model-before',
+      approvalPolicy: 'auto',
+      sandboxMode: 'danger-full-access',
+      tokenEconomyMode: false,
+      insecure: false,
+      safeMode: true,
+      storage: { backend: 'file' },
+      capabilities: configuredCapabilities,
+      extensionHostRunnerPath: runnerPath
+    })
+
+    try {
+      const platform = runtime.extensionPlatform!
+      const toolHost = runtime.toolHost
+      if (!toolHost) throw new Error('Expected the Kun runtime tool host to be available')
+      await platform.packageManager.registerDevelopment(sourceDir, {
+        grantedPermissions: ['tools.register'],
+        enable: true,
+        select: true
+      })
+
+      await toolHost.listTools()
+      expect(platform.tools.list('acme.lazy')).toEqual([])
+      expect(await platform.manager.diagnostic('acme.lazy')).toMatchObject({ active: false })
+      expect(runtime.info().safeMode).toBe(true)
+      expect(runtime.info().capabilities.mcp.enabled).toBe(false)
+      expect(runtime.info().capabilities.web.fetch.enabled).toBe(true)
+      expect(runtime.info().capabilities.subagents.enabled).toBe(true)
+      expect((await runtime.toolDiagnostics?.())?.mcpServers).toEqual([])
+      expect(configuredCapabilities.mcp.enabled).toBe(true)
+      await expect(runtime.applyConfig({ serve: { safeMode: false } })).resolves.toEqual({
+        ok: false,
+        code: 'restart_required',
+        message: 'safe mode changes require a runtime restart'
+      })
+    } finally {
+      await runtime.shutdown?.()
+    }
+  }, 30_000)
 })
 
 async function writeLazyToolExtension(root: string): Promise<void> {

@@ -50,6 +50,12 @@ export function parseServeOptions(
     configServe.tokenEconomy?.enabled ??
     configServe.tokenEconomyMode ??
     DEFAULT_SERVE_OPTIONS.tokenEconomyMode
+  const safeMode =
+    booleanFlag(raw, 'safe-mode') ??
+    booleanFlag(raw, 'safeMode') ??
+    envBoolean(env.KUN_SAFE_MODE) ??
+    configServe.safeMode ??
+    DEFAULT_SERVE_OPTIONS.safeMode
   const explicitObservabilityEnabled =
     booleanFlag(raw, 'observability') ??
     envBoolean(env.KUN_OBSERVABILITY)
@@ -171,6 +177,7 @@ export function parseServeOptions(
       enabled: tokenEconomyMode
     },
     toolOutputLimits: configServe.toolOutputLimits ?? DEFAULT_SERVE_OPTIONS.toolOutputLimits,
+    safeMode,
     insecure:
       typeof raw.insecure === 'string'
         ? raw.insecure !== 'false' && raw.insecure !== '0'
@@ -246,6 +253,7 @@ Options:
   --approval-policy <p>    on-request | untrusted | never | auto | suggest
   --sandbox-mode <mode>    read-only | workspace-write | danger-full-access | external-sandbox
   --token-economy          Compress safe tool context before model calls
+  --safe-mode              Start with MCP and automatic extension activation disabled
   --insecure               Disable bearer token check (local dev only)
   --storage-backend <b>    hybrid | file (default hybrid)
   --sqlite-path <path>     SQLite index path for hybrid storage

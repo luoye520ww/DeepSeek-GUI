@@ -336,6 +336,11 @@ export const KunServeConfigSchema = z
     tokenEconomyMode: z.boolean().optional(),
     tokenEconomy: TokenEconomyConfigSchema.optional(),
     toolOutputLimits: ToolOutputLimitsConfigSchema.optional(),
+    /**
+     * Restricted recovery mode. A GUI supervisor may request it after a crash
+     * loop, or an operator can explicitly request it.
+     */
+    safeMode: z.boolean().optional(),
     insecure: z.boolean().optional(),
     storage: StorageConfigSchema.optional(),
     observability: ObservabilityConfigSchema.optional(),
