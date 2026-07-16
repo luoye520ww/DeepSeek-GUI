@@ -928,6 +928,7 @@ export function SettingsView(): ReactElement {
 
   const kun = getKunRuntimeSettings(form)
   const provider = getModelProviderSettings(form)
+  const persistedProvider = getModelProviderSettings(persistedSettingsRef.current ?? form)
   const activeApiKey = getActiveAgentApiKey(form)
 
   const update = (partial: SettingsPatch): void => {
@@ -1086,6 +1087,7 @@ export function SettingsView(): ReactElement {
     tCommon,
     form,
     provider,
+    persistedProvider,
     kun,
     activeApiKey,
     update,

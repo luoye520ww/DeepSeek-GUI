@@ -33,13 +33,10 @@ import {
   KUN_BACKGROUND_SHELLS_TEMPLATE,
   KUN_BACKGROUND_SHELL_TEMPLATE
 } from '../../../shared/kun-endpoints'
-import { MODEL_ENDPOINT_FORMATS } from '../../../shared/app-settings'
 import { MAX_BODY_BYTES, MAX_URL_LENGTH, trimmedString } from './common'
 export const providerProbePayloadSchema = z
   .object({
-    baseUrl: trimmedString(MAX_URL_LENGTH),
-    apiKey: z.string().max(8_192),
-    endpointFormat: z.enum(MODEL_ENDPOINT_FORMATS)
+    providerId: trimmedString(64)
   })
   .strict()
 

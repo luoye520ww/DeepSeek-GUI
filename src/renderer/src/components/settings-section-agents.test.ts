@@ -10,7 +10,11 @@ import {
   type ModelProviderProfileV1
 } from '@shared/app-settings'
 import { AgentsSettingsSection, modelProvidersSettingsPatch } from './settings-section-agents'
-import { ProvidersSettingsSection } from './settings-section-providers'
+import {
+  ProvidersSettingsSection,
+  hasSavedProviderProbeConfiguration,
+  providerProbeRequest
+} from './settings-section-providers'
 
 const labels: Record<string, string> = {
   agentsQuickBase: 'Base',
@@ -371,6 +375,38 @@ function baseCtx(): Record<string, unknown> {
 }
 
 describe('AgentsSettingsSection Kun diagnostics smoke', () => {
+  it('builds provider probe IPC payloads without API keys or endpoint fields', () => {
+    expect(providerProbeRequest('together-ai')).toEqual({ providerId: 'together-ai' })
+    expect(providerProbeRequest('together-ai')).not.toHaveProperty('apiKey')
+    expect(providerProbeRequest('together-ai')).not.toHaveProperty('baseUrl')
+    expect(providerProbeRequest('together-ai')).not.toHaveProperty('endpointFormat')
+  })
+
+  it('requires the provider connection configuration to be saved before probing', () => {
+    const persisted = defaultModelProviderSettings()
+    const saved = persisted.providers[0]!
+    expect(hasSavedProviderProbeConfiguration(saved, persisted)).toBe(true)
+    expect(hasSavedProviderProbeConfiguration({
+      ...saved,
+      baseUrl: 'https://unsaved.example.com/v1'
+    }, persisted)).toBe(false)
+    expect(hasSavedProviderProbeConfiguration({
+      ...saved,
+      id: 'new-provider'
+    }, persisted)).toBe(false)
+  })
+
+  it('accepts a credential-migration hydrated saved provider profile', () => {
+    const persisted = defaultModelProviderSettings()
+    const hydrated = {
+      ...persisted.providers[0]!,
+      apiKey: 'credential-store-hydrated-secret'
+    }
+    persisted.providers[0] = hydrated
+
+    expect(hasSavedProviderProbeConfiguration({ ...hydrated }, persisted)).toBe(true)
+  })
+
   it('builds a single patch when adding and selecting a model provider', () => {
     const provider = defaultModelProviderSettings()
     const customProvider = {

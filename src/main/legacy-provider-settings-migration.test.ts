@@ -8,6 +8,7 @@ import {
   resolveKunRuntimeSettings
 } from '../shared/app-settings'
 import { LegacyProviderSettingsMigrationCoordinator } from './legacy-provider-settings-migration'
+import { probeSavedModelProvider } from './provider-connection'
 import { providersConfigForRuntime } from './runtime/kun-runtime-model-config'
 import { syncGuiManagedKunConfig } from './runtime/kun-runtime-config-service'
 import { JsonSettingsStore } from './settings-store'
@@ -151,6 +152,58 @@ describe('LegacyProviderSettingsMigrationCoordinator', () => {
     expect(updated.provider.apiKey).toBe('new-secret')
     expect(await bindingAccountId(dataDir, 'settings:provider:deepseek')).toBe(before)
     expect(await readFile(join(userDataDir, 'kun-settings.json'), 'utf8')).not.toContain('new-secret')
+  })
+
+  it('probes a saved provider with its migration-hydrated credential and endpoint format', async () => {
+    const userDataDir = await mkdtemp(join(tmpdir(), 'kun-settings-probe-credential-'))
+    const dataDir = join(userDataDir, 'runtime-data')
+    const plainStore = new JsonSettingsStore(userDataDir)
+    const defaults = await plainStore.load()
+    const providerDefaults = defaultModelProviderSettings()
+    const defaultProvider = providerDefaults.providers[0]!
+    await plainStore.save({
+      ...defaults,
+      provider: {
+        ...providerDefaults,
+        providers: [defaultProvider, {
+          ...defaultProvider,
+          id: 'saved-anthropic',
+          name: 'Saved Anthropic-compatible provider',
+          apiKey: 'protected-probe-secret',
+          baseUrl: 'https://api.example.com/v1',
+          endpointFormat: 'messages'
+        }]
+      },
+      agents: { kun: { ...defaultKunRuntimeSettings(), dataDir } }
+    })
+    const store = new JsonSettingsStore(userDataDir, {
+      credentialMigration: new LegacyProviderSettingsMigrationCoordinator()
+    })
+    const hydrated = await store.load()
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ data: [{ id: 'Claude/Exact-ID' }] })))
+    vi.stubGlobal('fetch', fetchMock)
+
+    try {
+      await expect(probeSavedModelProvider('saved-anthropic', hydrated)).resolves.toEqual({
+        ok: true,
+        latencyMs: expect.any(Number),
+        modelIds: ['Claude/Exact-ID']
+      })
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://api.example.com/v1/models',
+        expect.objectContaining({
+          method: 'GET',
+          headers: expect.objectContaining({
+            'anthropic-version': '2023-06-01',
+            'x-api-key': 'protected-probe-secret'
+          })
+        })
+      )
+      expect(await readFile(join(userDataDir, 'kun-settings.json'), 'utf8'))
+        .not.toContain('protected-probe-secret')
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('rolls back a secure pending migration when the ordinary settings commit fails', async () => {

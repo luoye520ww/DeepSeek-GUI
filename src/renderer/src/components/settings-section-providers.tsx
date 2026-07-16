@@ -39,7 +39,7 @@ import {
   tokenPlanProviderId
 } from '@shared/app-settings'
 import type { ModelProviderPreset } from '@shared/model-provider-presets'
-import type { ModelProviderProbeResult } from '@shared/kun-gui-api'
+import type { ModelProviderProbeRequest, ModelProviderProbeResult } from '@shared/kun-gui-api'
 import {
   AudioLines,
   ChevronDown,
@@ -299,7 +299,19 @@ function isAcceptableHttpUrl(value: string): boolean {
 }
 
 function providerConnectionFingerprint(provider: ModelProviderProfileV1): string {
-  return [provider.baseUrl, provider.apiKey, provider.endpointFormat].join('\0')
+  return [provider.baseUrl, provider.apiKey, provider.endpointFormat, provider.kind ?? 'http'].join('\0')
+}
+
+export function providerProbeRequest(providerId: string): ModelProviderProbeRequest {
+  return { providerId }
+}
+
+export function hasSavedProviderProbeConfiguration(
+  target: ModelProviderProfileV1,
+  persistedProvider: ModelProviderSettingsV1
+): boolean {
+  const saved = persistedProvider.providers.find((item) => item.id === target.id)
+  return Boolean(saved && providerConnectionFingerprint(saved) === providerConnectionFingerprint(target))
 }
 
 type ProbeState = {
@@ -790,6 +802,7 @@ export function ProvidersSettingsSection({ ctx }: { ctx: Record<string, any> }):
     t,
     form,
     provider: providerFromContext,
+    persistedProvider: persistedProviderFromContext,
     kun,
     update,
     showApiKey,
@@ -797,6 +810,7 @@ export function ProvidersSettingsSection({ ctx }: { ctx: Record<string, any> }):
     selectControlClass
   } = ctx
   const provider = providerFromContext ?? defaultModelProviderSettings()
+  const persistedProvider = persistedProviderFromContext ?? provider
   const modelProviders = provider.providers as ModelProviderProfileV1[]
   const [selectedProviderId, setSelectedProviderId] = useState<string>(
     kun.providerId?.trim() || modelProviders[0]?.id || DEFAULT_MODEL_PROVIDER_ID
@@ -1179,6 +1193,18 @@ export function ProvidersSettingsSection({ ctx }: { ctx: Record<string, any> }):
   const runProbe = async (target: ModelProviderProfileV1, mode: 'test' | 'fetch'): Promise<void> => {
     if (typeof window.kunGui?.probeModelProvider !== 'function') return
     const fingerprint = providerConnectionFingerprint(target)
+    if (!hasSavedProviderProbeConfiguration(target, persistedProvider)) {
+      setProbeStates((prev) => ({
+        ...prev,
+        [target.id]: {
+          fingerprint,
+          mode,
+          status: 'error',
+          message: 'Save this provider before testing its connection.'
+        }
+      }))
+      return
+    }
     // Subscription (agent-sdk) providers have no HTTP /models endpoint — the turn
     // is delegated to the Claude Agent SDK. "Test" reports login readiness instead
     // of probing api.anthropic.com, which would 401 on the x-api-key header.
@@ -1238,11 +1264,7 @@ export function ProvidersSettingsSection({ ctx }: { ctx: Record<string, any> }):
     setProbeStates((prev) => ({ ...prev, [target.id]: { fingerprint, mode, status: 'busy' } }))
     let result: ModelProviderProbeResult
     try {
-      result = await window.kunGui.probeModelProvider({
-        baseUrl: target.baseUrl,
-        apiKey: target.apiKey,
-        endpointFormat: target.endpointFormat
-      })
+      result = await window.kunGui.probeModelProvider(providerProbeRequest(target.id))
     } catch (error) {
       result = { ok: false, message: error instanceof Error ? error.message : String(error) }
     }

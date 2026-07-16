@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -102,6 +103,66 @@ describe('registerAppIpcHandlers', () => {
   beforeEach(() => {
     handlers.clear()
     electronMock.showMessageBox.mockReset()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('resolves saved provider credentials in main before probing models', async () => {
+    let requestPath = ''
+    let authorization = ''
+    let requestBody = ''
+    const server = createServer(async (request, response) => {
+      requestPath = request.url ?? ''
+      authorization = request.headers.authorization ?? ''
+      for await (const chunk of request) requestBody += String(chunk)
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify([{ id: 'MiniMaxAI/MiniMax-M3' }]))
+    })
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(0, '127.0.0.1', () => {
+        server.off('error', reject)
+        resolve()
+      })
+    })
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('Test server did not expose a TCP port')
+    const saved = settings()
+    const profile = saved.provider.providers[0]!
+    saved.provider.providers[0] = {
+      ...profile,
+      id: 'together-ai',
+      apiKey: 'stored-provider-secret',
+      baseUrl: `http://127.0.0.1:${address.port}/v1`,
+      endpointFormat: 'chat_completions'
+    }
+    try {
+      registerAppIpcHandlers(registerOptions({ store: { load: vi.fn(async () => saved) } as never }))
+
+      await expect(handlers.get('provider:probe')?.({}, { providerId: 'together-ai' })).resolves.toEqual({
+        ok: true,
+        latencyMs: expect.any(Number),
+        modelIds: ['MiniMaxAI/MiniMax-M3']
+      })
+      expect(requestPath).toBe('/v1/models')
+      expect(authorization).toBe('Bearer stored-provider-secret')
+      expect(requestBody).toBe('')
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve())
+      })
+    }
+  })
+
+  it('rejects provider probes for unsaved provider drafts', async () => {
+    registerAppIpcHandlers(registerOptions())
+
+    await expect(handlers.get('provider:probe')?.({}, { providerId: 'not-saved-yet' })).resolves.toEqual({
+      ok: false,
+      message: 'Save this provider before testing its connection.'
+    })
   })
 
   it('rejects invalid settings patches at the handler boundary', async () => {

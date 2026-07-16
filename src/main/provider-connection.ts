@@ -1,11 +1,13 @@
 import {
+  getModelProviderSettings,
   isCustomModelEndpointFormat,
   normalizeModelEndpointFormat,
   resolveModelProviderProxyUrl,
   type AppSettingsV1,
-  type ModelEndpointFormat
+  type ModelEndpointFormat,
+  type ModelProviderProfileV1
 } from '../shared/app-settings'
-import type { ModelProviderProbeRequest, ModelProviderProbeResult } from '../shared/kun-gui-api'
+import type { ModelProviderProbeResult } from '../shared/kun-gui-api'
 import { upstreamOpenAiModelsUrl } from '../shared/openai-compat-url'
 import { CHATGPT_SUBSCRIPTION_MODEL_IDS } from '../shared/model-provider-presets'
 import { fetchWithOptionalProxy } from './proxy-fetch'
@@ -27,6 +29,7 @@ const DIRECT_PROBE_TIMEOUT_MS = 5_000
 const ANTHROPIC_VERSION = '2023-06-01'
 
 type ProviderProbeFetch = typeof fetchWithOptionalProxy
+type ModelProviderProbeTarget = Pick<ModelProviderProfileV1, 'apiKey' | 'baseUrl' | 'endpointFormat'>
 
 export function providerProbeHeaders(
   endpointFormat: ModelEndpointFormat,
@@ -48,7 +51,7 @@ export function providerProbeHeaders(
  * process so the API key never leaves it and renderer CORS does not apply.
  */
 export async function probeModelProvider(
-  request: ModelProviderProbeRequest,
+  request: ModelProviderProbeTarget,
   settings?: AppSettingsV1,
   fetcher: ProviderProbeFetch = fetchWithOptionalProxy
 ): Promise<ModelProviderProbeResult> {
@@ -111,6 +114,24 @@ export async function probeModelProvider(
     return { ok: false, message: `${url} responded ${res.status}: ${text.slice(0, 300)}` }
   }
   return { ok: true, latencyMs, modelIds: parseModelIds(text) }
+}
+
+/**
+ * Resolve a provider probe entirely in the main process. Its settings
+ * projection can hydrate protected credentials, while the renderer sends no
+ * endpoint or secret when it requests a probe.
+ */
+export async function probeSavedModelProvider(
+  providerId: string,
+  settings: AppSettingsV1,
+  fetcher: ProviderProbeFetch = fetchWithOptionalProxy
+): Promise<ModelProviderProbeResult> {
+  const id = providerId.trim()
+  const provider = getModelProviderSettings(settings).providers.find((entry) => entry.id === id)
+  if (!provider) {
+    return { ok: false, message: 'Save this provider before testing its connection.' }
+  }
+  return probeModelProvider(provider, settings, fetcher)
 }
 
 function providerProbeFailureMessage(error: unknown, url: string): string {

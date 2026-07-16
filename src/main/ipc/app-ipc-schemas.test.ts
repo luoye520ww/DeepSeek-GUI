@@ -3,6 +3,7 @@ import {
   clawImInstallPollPayloadSchema,
   clawTaskFromTextPayloadSchema,
   isSafeOpenExternalUrl,
+  providerProbePayloadSchema,
   runtimeRequestPayloadSchema,
   scheduleTaskFromTextPayloadSchema,
   settingsPatchSchema,
@@ -23,6 +24,16 @@ import {
 } from './app-ipc-schemas'
 
 describe('app-ipc-schemas', () => {
+  it('accepts only a saved provider ID for provider probes', () => {
+    expect(providerProbePayloadSchema.parse({ providerId: 'together-ai' })).toEqual({
+      providerId: 'together-ai'
+    })
+    expect(providerProbePayloadSchema.safeParse({
+      providerId: 'together-ai',
+      apiKey: 'renderer-secret'
+    }).success).toBe(false)
+  })
+
   it('normalizes runtime request paths', () => {
     const payload = runtimeRequestPayloadSchema.parse({
       path: 'v1/threads?limit=1',

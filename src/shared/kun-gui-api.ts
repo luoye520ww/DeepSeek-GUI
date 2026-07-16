@@ -4,7 +4,6 @@ import type {
   ClawRunResult,
   ClawTaskFromTextResult,
   ClawRuntimeStatus,
-  ModelEndpointFormat,
   ModelProviderModelProfileV1,
   ScheduleRunResult,
   ScheduleRuntimeStatus,
@@ -227,9 +226,11 @@ export type ModelProviderModelGroup = {
   }
 }
 export type ModelProviderProbeRequest = {
-  baseUrl: string
-  apiKey: string
-  endpointFormat: ModelEndpointFormat
+  /**
+   * An already-persisted provider profile. The main process resolves its
+   * endpoint and credential; renderer IPC never carries the API key.
+   */
+  providerId: string
 }
 export type ModelProviderProbeResult =
   | { ok: true; latencyMs: number; modelIds: string[] }
