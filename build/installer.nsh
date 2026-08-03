@@ -284,7 +284,35 @@ Var /GLOBAL KunInstallerStopResult
     ${endif}
     ReadEnvStr $KunInstallerUpdateSourceDir "KUN_INSTALLER_UPDATE_SOURCE"
     ${if} $KunInstallerUpdateSourceDir == ""
-      DetailPrint "Automatic update source marker is unavailable; using compatible single-registration selection."
+      # Older Kun versions did not export the running application directory.
+      # Select an unambiguous single registration explicitly because the
+      # updater's --updated path may otherwise retain the default install mode.
+      ReadRegStr $R0 HKEY_CURRENT_USER "${INSTALL_REGISTRY_KEY}" InstallLocation
+      ReadRegStr $R1 HKEY_CURRENT_USER "${UNINSTALL_REGISTRY_KEY}" UninstallString
+      ReadRegStr $R2 HKEY_LOCAL_MACHINE "${INSTALL_REGISTRY_KEY}" InstallLocation
+      ReadRegStr $R3 HKEY_LOCAL_MACHINE "${UNINSTALL_REGISTRY_KEY}" UninstallString
+      ${if} $R0 == ""
+      ${andIf} $R1 == ""
+        ${if} $R2 != ""
+        ${orIf} $R3 != ""
+          StrCpy $hasPerMachineInstallation 1
+          StrCpy $hasPerUserInstallation 0
+          !insertmacro setInstallModePerAllUsers
+          DetailPrint "Automatic update selected the only registered all-users ${PRODUCT_NAME} installation."
+        ${else}
+          DetailPrint "Automatic update found no existing ${PRODUCT_NAME} registration; keeping the requested install mode."
+        ${endif}
+        Return
+      ${endif}
+      ${if} $R2 == ""
+      ${andIf} $R3 == ""
+        StrCpy $hasPerMachineInstallation 0
+        StrCpy $hasPerUserInstallation 1
+        !insertmacro setInstallModePerUser
+        DetailPrint "Automatic update selected the only registered current-user ${PRODUCT_NAME} installation."
+        Return
+      ${endif}
+      DetailPrint "Automatic update source marker is unavailable with registrations in both scopes; keeping the requested install mode."
       Return
     ${endif}
 
