@@ -528,6 +528,13 @@ describe('electron-builder Kun packaging', () => {
     expect(installerScript).toContain(
       '!insertmacro kunSetEnvironmentFromRegister "KUN_INSTALLER_UNINSTALL_STRING" $R9'
     )
+    const resolveSourceFunction = installerScript.slice(
+      installerScript.indexOf('Function KunResolveRegisteredSource'),
+      installerScript.indexOf('Function KunSelectAutomaticUpdateMode')
+    )
+    expect(resolveSourceFunction.indexOf('kunSetEnvironmentFromRegister')).toBeLessThan(
+      resolveSourceFunction.indexOf('SetEnvironmentVariable')
+    )
     expect(installerScript).toContain(
       '!insertmacro kunSetEnvironmentFromRegister "KUN_INSTALLER_CURRENT_USER_UNINSTALL_STRING" $R1'
     )

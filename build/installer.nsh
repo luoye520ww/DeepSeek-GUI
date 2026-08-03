@@ -276,8 +276,8 @@ Var /GLOBAL KunInstallerStopResult
   FunctionEnd
 
   Function KunResolveRegisteredSource
-    System::Call 'kernel32::SetEnvironmentVariable(t, t)i ("KUN_INSTALLER_SOURCE", "$KunInstallerSourceDir").r0'
     !insertmacro kunSetEnvironmentFromRegister "KUN_INSTALLER_UNINSTALL_STRING" $R9
+    System::Call 'kernel32::SetEnvironmentVariable(t, t)i ("KUN_INSTALLER_SOURCE", "$KunInstallerSourceDir").r0'
     Delete "$KunInstallerResultPath"
     !insertmacro kunRunMigrationHelper ResolveSource
     ${if} $KunInstallerHelperExitCode == 0
