@@ -24,6 +24,7 @@ Var /GLOBAL KunInstallerHelperPath
 Var /GLOBAL KunInstallerPowerShellPath
 Var /GLOBAL KunInstallerHelperExitCode
 Var /GLOBAL KunInstallerHelperOutput
+Var /GLOBAL KunInstallerHelperStdout
 Var /GLOBAL KunInstallerCurrentPid
 !ifdef BUILD_UNINSTALLER
 Var /GLOBAL KunInstallerStopAttempt
@@ -31,9 +32,14 @@ Var /GLOBAL KunInstallerStopResult
 !endif
 
 !macro kunRunMigrationHelper ACTION
-  nsExec::ExecToStack `"$KunInstallerPowerShellPath" -NoProfile -ExecutionPolicy Bypass -File "$KunInstallerHelperPath" -Action ${ACTION}`
+  !ifdef BUILD_UNINSTALLER
+    nsExec::ExecToStack `"$KunInstallerPowerShellPath" -NoProfile -ExecutionPolicy Bypass -File "$KunInstallerHelperPath" -Action ${ACTION}`
+  !else
+    nsExec::ExecToStack `"$KunInstallerPowerShellPath" -NoProfile -ExecutionPolicy Bypass -File "$KunInstallerHelperPath" -Action ${ACTION} -ResultPath "$KunInstallerResultPath"`
+  !endif
   Pop $KunInstallerHelperExitCode
   Pop $KunInstallerHelperOutput
+  StrCpy $KunInstallerHelperStdout $KunInstallerHelperOutput
 !macroend
 
 !macro customPageAfterChangeDir
@@ -253,12 +259,20 @@ Var /GLOBAL KunInstallerStopResult
     FileReadUTF16LE $KunInstallerResultHandle $KunInstallerHelperOutput
     FileClose $KunInstallerResultHandle
     Delete "$KunInstallerResultPath"
+    ${if} $KunInstallerHelperOutput == ""
+    ${andIf} $KunInstallerHelperStdout != ""
+      StrCpy $KunInstallerHelperOutput $KunInstallerHelperStdout
+    ${endif}
     Return
 
     KunMigrationResultMissing:
+      Delete "$KunInstallerResultPath"
+      ${if} $KunInstallerHelperStdout != ""
+        StrCpy $KunInstallerHelperOutput $KunInstallerHelperStdout
+        Return
+      ${endif}
       StrCpy $KunInstallerHelperExitCode 1
       StrCpy $KunInstallerHelperOutput "The installer helper did not produce a result file."
-      Delete "$KunInstallerResultPath"
   FunctionEnd
 
   Function KunResolveRegisteredSource
